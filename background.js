@@ -592,9 +592,24 @@ function extractAutoLabel(text) {
 
 async function handleStartTracking(tabId) {
     const tab = await chrome.tabs.get(tabId);
-    if (!tabToNode.has(tabId)) {
-        await createRootNode(tab);
+
+    // If already tracked as a child (e.g. onCreated auto-detected it),
+    // remove the old mapping so we can create a fresh root node
+    if (tabToNode.has(tabId)) {
+        const existingNodeId = tabToNode.get(tabId);
+        const existingNode = await TreeStorage.getNode(existingNodeId);
+        // Only re-create as root if it was auto-created as a child
+        if (existingNode && existingNode.parentId) {
+            tabToNode.delete(tabId);
+            // Clean up the auto-created child node
+            await TreeStorage.deleteNode(existingNodeId);
+        } else {
+            // Already a root node, nothing to do
+            return;
+        }
     }
+
+    await createRootNode(tab);
 }
 
 async function handleRenameNode(nodeId, label) {
