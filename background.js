@@ -472,7 +472,8 @@ async function handleSnapshotData(tabId, data, reason) {
         }
 
         // Fallback: if we simply have no auto-label yet (e.g. first load), use AI on page text
-        if (!newAutoLabel && !node.autoLabel && data.text) {
+        if (!newAutoLabel && !node.autoLabel && data.text && data.text.length > 50) {
+            console.log('[AI Tree] Initial naming triggered, text length:', data.text.length);
             const settings = await chrome.storage.local.get(['aiNamingType', 'aiApiUrl', 'aiApiKey', 'aiModel']);
             const namingType = settings.aiNamingType || 'builtin';
             const apiContext = data.text.slice(-5000);
@@ -480,7 +481,9 @@ async function handleSnapshotData(tabId, data, reason) {
             if (namingType === 'builtin') {
                 try {
                     newAutoLabel = await generateTitleWithFallback(apiContext, null, BUILTIN_API_URL);
+                    console.log('[AI Tree] Initial AI naming result:', newAutoLabel);
                 } catch (e) {
+                    console.error('[AI Tree] Initial AI naming failed:', e);
                     newAutoLabel = extractAutoLabel(data.text);
                 }
             } else if (namingType === 'custom' && settings.aiApiKey) {
@@ -489,12 +492,16 @@ async function handleSnapshotData(tabId, data, reason) {
                     newAutoLabel = await generateTitleFromOpenAICompatible(
                         apiContext, settings.aiApiKey, settings.aiModel, baseUrl
                     );
+                    console.log('[AI Tree] Initial AI naming result:', newAutoLabel);
                 } catch (e) {
+                    console.error('[AI Tree] Initial AI naming failed:', e);
                     newAutoLabel = extractAutoLabel(data.text);
                 }
             } else {
                 newAutoLabel = extractAutoLabel(data.text);
             }
+        } else if (!newAutoLabel && !node.autoLabel) {
+            console.log('[AI Tree] Skipped initial naming: text length=', data.text ? data.text.length : 0);
         }
 
         // Only update if we found a meaningful new label
