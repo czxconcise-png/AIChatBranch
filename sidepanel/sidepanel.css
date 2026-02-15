@@ -525,6 +525,7 @@ body {
   max-height: 90vh;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
   animation: fadeIn 0.15s ease;
   border: 1px solid var(--border);
 }
@@ -545,6 +546,8 @@ body {
 .settings-body {
   padding: 16px;
   border-radius: 0 0 var(--radius) var(--radius);
+  flex: 1;
+  overflow-y: auto;
 }
 
 .form-group {
@@ -678,6 +681,8 @@ body {
 .settings-view {
   display: flex;
   flex-direction: column;
+  flex: 1;
+  min-height: 0;
 }
 
 .settings-menu {
