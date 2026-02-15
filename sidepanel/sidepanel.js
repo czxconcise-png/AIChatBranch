@@ -792,6 +792,11 @@ if (btnSettings) {
         btn.addEventListener('click', goBackToMain);
     });
 
+    // Close buttons in sub-views → close modal
+    document.querySelectorAll('.btn-close-settings').forEach(btn => {
+        btn.addEventListener('click', closeSettings);
+    });
+
     if (btnSaveNaming) btnSaveNaming.addEventListener('click', saveNamingSettings);
     if (btnSaveAppearance) btnSaveAppearance.addEventListener('click', saveAppearanceSettings);
     if (btnTestConnection) btnTestConnection.addEventListener('click', testConnection);
