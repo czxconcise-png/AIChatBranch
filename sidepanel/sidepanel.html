@@ -129,8 +129,8 @@
             <div class="form-group">
               <label for="setting-naming-type">命名方式</label>
               <select id="setting-naming-type" class="form-control">
-                <option value="builtin">AI 自动命名（内置，推荐）</option>
-                <option value="custom">自定义 API</option>
+                <option value="builtin">AI 自动命名 (免费)</option>
+                <option value="custom">AI 自动命名 (自定义)</option>
                 <option value="local">本地算法</option>
               </select>
             </div>
@@ -140,7 +140,8 @@
             </div>
 
             <div id="setting-api-group" class="hidden">
-              <p class="form-hint" style="margin-bottom: 12px;">支持 OpenAI、Gemini、Claude (via Proxy)、SiliconFlow 等兼容接口。</p>
+              <p class="form-hint" style="margin-bottom: 12px;">支持 OpenAI、Gemini、Claude (via Proxy)、SiliconFlow 等兼容接口。
+              </p>
               <div class="form-group">
                 <label for="setting-api-url">Base URL</label>
                 <input type="text" id="setting-api-url" class="form-control" placeholder="https://api.openai.com/v1">
@@ -153,44 +154,47 @@
                 <label for="setting-model">模型 (Model)</label>
                 <input type="text" id="setting-model" class="form-control" placeholder="gpt-3.5-turbo">
               </div>
-              <button id="btn-test-connection" class="btn btn-secondary btn-full">测试连接 (Test)</button>
             </div>
 
             <div id="setting-local-hint" class="form-hint hidden" style="margin: 8px 0 0;">
               使用本地文本分析算法，无需联网，但准确度较低。
             </div>
 
+            <button id="btn-test-connection" class="btn btn-secondary btn-full" style="margin-top: 12px;">测试连接
+              (Test)</button>
+
             <button id="btn-save-naming" class="btn btn-primary btn-full" style="margin-top: 16px;">保存 (Save)</button>
           </div>
         </div>
-
-        <!-- View 3: Appearance Settings -->
-        <div id="settings-appearance" class="settings-view" style="display:none;">
-          <div class="modal-header">
-            <button class="btn btn-ghost settings-back" title="返回设置">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
-                <path d="M19 12H5M5 12l7 7M5 12l7-7" />
-              </svg>
-            </button>
-            <h2>界面外观</h2>
-            <div style="width: 56px;"></div>
-          </div>
-          <div class="settings-body">
-            <div class="form-group">
-              <label for="setting-theme">主题 (Theme)</label>
-              <select id="setting-theme" class="form-control">
-                <option value="system">跟随系统 (System Default)</option>
-                <option value="light">浅色模式 (Light)</option>
-                <option value="dark">深色模式 (Dark)</option>
-              </select>
-            </div>
-            <button id="btn-save-appearance" class="btn btn-primary btn-full" style="margin-top: 16px;">保存
-              (Save)</button>
-          </div>
-        </div>
-
       </div>
+
+      <!-- View 3: Appearance Settings -->
+      <div id="settings-appearance" class="settings-view" style="display:none;">
+        <div class="modal-header">
+          <button class="btn btn-ghost settings-back" title="返回设置">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+              <path d="M19 12H5M5 12l7 7M5 12l7-7" />
+            </svg>
+          </button>
+          <h2>界面外观</h2>
+          <div style="width: 56px;"></div>
+        </div>
+        <div class="settings-body">
+          <div class="form-group">
+            <label for="setting-theme">主题 (Theme)</label>
+            <select id="setting-theme" class="form-control">
+              <option value="system">跟随系统 (System Default)</option>
+              <option value="light">浅色模式 (Light)</option>
+              <option value="dark">深色模式 (Dark)</option>
+            </select>
+          </div>
+          <button id="btn-save-appearance" class="btn btn-primary btn-full" style="margin-top: 16px;">保存
+            (Save)</button>
+        </div>
+      </div>
+
     </div>
+  </div>
   </div>
 
   <script src="sidepanel.js"></script>

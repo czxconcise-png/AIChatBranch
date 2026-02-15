@@ -16,11 +16,15 @@ importScripts('storage.js');
 // Models are tried in order; on 429 rate limit, the next model is used.
 const BUILTIN_API_URL = 'https://aichattree-api.czx-ai.workers.dev/v1';
 const SILICONFLOW_MODELS = [
-    'Qwen/Qwen2.5-7B-Instruct',
+    'Qwen/Qwen3-8B',
     'THUDM/glm-4-9b-chat',
+    'THUDM/GLM-Z1-9B-0414',
+    'THUDM/GLM-4-9B-0414',
+    'tencent/Hunyuan-MT-7B',
     'internlm/internlm2_5-7b-chat',
-    'Qwen/Qwen2-7B-Instruct',
-    'Qwen/Qwen2-1.5B-Instruct',
+    'THUDM/GLM-4.1V-9B-Thinking',
+    'deepseek-ai/DeepSeek-R1-Distill-Qwen-7B',
+    'deepseek-ai/DeepSeek-R1-0528-Qwen3-8B'
 ];
 const modelCooldowns = new Map(); // modelId → timestamp when cooldown expires
 const MODEL_COOLDOWN_MS = 60_000; // 60 seconds
