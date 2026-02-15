@@ -150,15 +150,17 @@ async function createChildNode(tab, parentTabId) {
 chrome.tabs.onCreated.addListener(async (tab) => {
     // If this tab was opened from a tracked tab, create a child node
     if (tab.openerTabId && tabToNode.has(tab.openerTabId)) {
-        // Wait a moment for the tab to fully initialize
+        // Wait for tab to fully initialize (Gemini and complex SPA pages can be slow)
         setTimeout(async () => {
             try {
+                // Double-check we haven't already tracked this tab
+                if (tabToNode.has(tab.id)) return;
                 const updatedTab = await chrome.tabs.get(tab.id);
                 await createChildNode(updatedTab, tab.openerTabId);
             } catch {
                 // Tab may have been closed already
             }
-        }, 500);
+        }, 1500);
     }
 });
 
@@ -458,9 +460,30 @@ async function handleSnapshotData(tabId, data, reason) {
             }
         }
 
-        // Fallback: if we simply have no auto-label yet (e.g. first load), try page text
-        if (!newAutoLabel && !node.autoLabel) {
-            newAutoLabel = extractAutoLabel(data.text);
+        // Fallback: if we simply have no auto-label yet (e.g. first load), use AI on page text
+        if (!newAutoLabel && !node.autoLabel && data.text) {
+            const settings = await chrome.storage.local.get(['aiNamingType', 'aiApiUrl', 'aiApiKey', 'aiModel']);
+            const namingType = settings.aiNamingType || 'builtin';
+            const apiContext = data.text.slice(-5000);
+
+            if (namingType === 'builtin') {
+                try {
+                    newAutoLabel = await generateTitleWithFallback(apiContext, null, BUILTIN_API_URL);
+                } catch (e) {
+                    newAutoLabel = extractAutoLabel(data.text);
+                }
+            } else if (namingType === 'custom' && settings.aiApiKey) {
+                try {
+                    const baseUrl = settings.aiApiUrl || 'https://api.openai.com/v1';
+                    newAutoLabel = await generateTitleFromOpenAICompatible(
+                        apiContext, settings.aiApiKey, settings.aiModel, baseUrl
+                    );
+                } catch (e) {
+                    newAutoLabel = extractAutoLabel(data.text);
+                }
+            } else {
+                newAutoLabel = extractAutoLabel(data.text);
+            }
         }
 
         // Only update if we found a meaningful new label
