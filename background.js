@@ -146,16 +146,27 @@ async function createChildNode(tab, parentTabId) {
 
 // ── Tab event listeners ──
 
-// Detect tab creation (especially duplication)
+// Detect tab duplication (only true duplicates, not just any new tab)
 chrome.tabs.onCreated.addListener(async (tab) => {
-    // If this tab was opened from a tracked tab, create a child node
+    // Only consider tabs opened from a tracked tab
     if (tab.openerTabId && tabToNode.has(tab.openerTabId)) {
         // Wait for tab to fully initialize (Gemini and complex SPA pages can be slow)
         setTimeout(async () => {
             try {
                 // Double-check we haven't already tracked this tab
                 if (tabToNode.has(tab.id)) return;
+
                 const updatedTab = await chrome.tabs.get(tab.id);
+                const parentTab = await chrome.tabs.get(tab.openerTabId);
+
+                // Only create child if this is a true duplication (same URL)
+                // Skip new tabs, blank pages, and navigation to different sites
+                const newUrl = updatedTab.url || updatedTab.pendingUrl || '';
+                const parentUrl = parentTab.url || '';
+                if (!newUrl || !parentUrl) return;
+                if (newUrl === 'chrome://newtab/' || newUrl === 'about:blank') return;
+                if (newUrl !== parentUrl) return;
+
                 await createChildNode(updatedTab, tab.openerTabId);
             } catch {
                 // Tab may have been closed already
