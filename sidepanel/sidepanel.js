@@ -592,10 +592,10 @@ const btnCloseSettings = document.getElementById('btn-close-settings');
 const settingsMain = document.getElementById('settings-main');
 const settingsNaming = document.getElementById('settings-naming');
 const settingsAppearance = document.getElementById('settings-appearance');
+const settingsCustomApi = document.getElementById('settings-custom-api');
 
 // Form elements
 const settingNamingType = document.getElementById('setting-naming-type');
-const settingApiGroup = document.getElementById('setting-api-group');
 const settingApiUrl = document.getElementById('setting-api-url');
 const settingApiKey = document.getElementById('setting-api-key');
 const settingModel = document.getElementById('setting-model');
@@ -605,6 +605,8 @@ const settingTheme = document.getElementById('setting-theme');
 const btnSaveNaming = document.getElementById('btn-save-naming');
 const btnSaveAppearance = document.getElementById('btn-save-appearance');
 const btnTestConnection = document.getElementById('btn-test-connection');
+const btnConfigCustom = document.getElementById('btn-config-custom');
+const btnSaveCustomApi = document.getElementById('btn-save-custom-api');
 
 // ── Settings Navigation ──
 
@@ -613,9 +615,10 @@ function showSettingsView(viewId) {
     settingsMain.style.display = 'none';
     settingsNaming.style.display = 'none';
     settingsAppearance.style.display = 'none';
+    if (settingsCustomApi) settingsCustomApi.style.display = 'none';
     // Show target
     const target = document.getElementById(viewId);
-    if (target) target.style.display = 'block';
+    if (target) target.style.display = 'flex';
 }
 
 function goBackToMain() {
@@ -653,18 +656,13 @@ function updateSettingsUI() {
     const builtinHint = document.getElementById('setting-builtin-hint');
     const localHint = document.getElementById('setting-local-hint');
 
-    // Show/hide sections based on mode
-    settingApiGroup.classList.add('hidden');
+    // Hide all conditional sections
     if (builtinHint) builtinHint.classList.add('hidden');
     if (localHint) localHint.classList.add('hidden');
-
-    // Hide test button by default (only needed for custom API)
-    // Hide test button by default (only needed for custom API)
-    // if (btnTestConnection) btnTestConnection.style.display = 'none'; // Handled by CSS
+    if (btnConfigCustom) btnConfigCustom.classList.add('hidden');
 
     if (type === 'custom') {
-        settingApiGroup.classList.remove('hidden');
-        // if (btnTestConnection) btnTestConnection.style.display = '';
+        if (btnConfigCustom) btnConfigCustom.classList.remove('hidden');
     } else if (type === 'builtin') {
         if (builtinHint) builtinHint.classList.remove('hidden');
     } else if (type === 'local') {
@@ -678,13 +676,6 @@ function saveNamingSettings() {
     const namingType = settingNamingType.value;
     const settings = { aiNamingType: namingType };
 
-    // Only save custom API fields if in custom mode
-    if (namingType === 'custom') {
-        settings.aiApiUrl = (settingApiUrl.value.trim() || 'https://api.openai.com/v1').replace(/\/$/, '');
-        settings.aiApiKey = settingApiKey.value.trim();
-        settings.aiModel = settingModel.value.trim();
-    }
-
     chrome.storage.local.set(settings, () => {
         goBackToMain();
     });
@@ -697,6 +688,21 @@ function saveAppearanceSettings() {
     chrome.storage.local.set({ theme: theme }, () => {
         applyTheme(theme);
         goBackToMain();
+    });
+}
+
+function saveCustomApiSettings() {
+    const settings = {
+        aiApiUrl: (settingApiUrl.value.trim() || 'https://api.openai.com/v1').replace(/\/$/, ''),
+        aiApiKey: settingApiKey.value.trim(),
+        aiModel: settingModel.value.trim(),
+        aiNamingType: 'custom'
+    };
+    settingNamingType.value = 'custom';
+
+    chrome.storage.local.set(settings, () => {
+        updateSettingsUI();
+        showSettingsView('settings-naming');
     });
 }
 
@@ -786,13 +792,24 @@ if (btnSettings) {
         btn.addEventListener('click', goBackToMain);
     });
 
-    // Save buttons
     if (btnSaveNaming) btnSaveNaming.addEventListener('click', saveNamingSettings);
     if (btnSaveAppearance) btnSaveAppearance.addEventListener('click', saveAppearanceSettings);
     if (btnTestConnection) btnTestConnection.addEventListener('click', testConnection);
+    if (btnConfigCustom) btnConfigCustom.addEventListener('click', () => showSettingsView('settings-custom-api'));
+    if (btnSaveCustomApi) btnSaveCustomApi.addEventListener('click', saveCustomApiSettings);
+
+    // Back from Custom API view -> Naming settings
+    document.querySelectorAll('.settings-back-to-naming').forEach(btn => {
+        btn.addEventListener('click', () => showSettingsView('settings-naming'));
+    });
 
     // Form change handlers
     settingNamingType.addEventListener('change', updateSettingsUI);
+
+    // Instant theme preview
+    if (settingTheme) {
+        settingTheme.addEventListener('change', () => applyTheme(settingTheme.value));
+    }
 
     // Click backdrop to close
     settingsModal.addEventListener('click', (e) => {
