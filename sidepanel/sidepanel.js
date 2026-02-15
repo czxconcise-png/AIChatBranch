@@ -469,7 +469,7 @@ function showContextMenu(event, node) {
     });
     items.push({ separator: true });
     items.push({ label: '🗑️ Delete Node', action: () => deleteNode(node.id, false) });
-    items.push({ label: '⚠️ Delete All', action: () => deleteNode(node.id, true), danger: true });
+    items.push({ label: '⚠️ Delete with Children', action: () => deleteNode(node.id, true), danger: true });
 
     items.forEach(item => {
         if (item.separator) {
