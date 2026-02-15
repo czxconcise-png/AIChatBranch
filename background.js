@@ -90,7 +90,12 @@ async function createRootNode(tab) {
     try {
         await chrome.tabs.sendMessage(tab.id, { type: 'START_TRACKING' });
     } catch {
-        // Content script might not be ready yet
+        // Content script might not be ready yet, retry after a delay
+        setTimeout(async () => {
+            try {
+                await chrome.tabs.sendMessage(tab.id, { type: 'START_TRACKING' });
+            } catch { /* give up */ }
+        }, 1000);
     }
 
     // Notify side panel to refresh
