@@ -191,6 +191,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             return false;
         }
 
+        if (message.type === 'GET_CONTENT') {
+            const content = capturePageContent();
+            sendResponse(content);
+            return false;
+        }
+
         if (message.type === 'STOP_TRACKING') {
             isTracked = false;
             stopPeriodicCapture();

@@ -285,9 +285,29 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                 const node = await TreeStorage.getNode(message.nodeId);
                 if (!node) { sendResponse({ success: false, error: 'Node not found' }); return; }
 
-                const snapshot = await TreeStorage.getSnapshot(message.nodeId);
-                const text = snapshot ? snapshot.text : '';
-                if (!text) { sendResponse({ success: false, error: 'No snapshot' }); return; }
+                let text = '';
+
+                // For live tabs: capture fresh content directly from the page
+                if (node.status === 'live' && node.tabId) {
+                    try {
+                        const response = await chrome.tabs.sendMessage(node.tabId, { type: 'GET_CONTENT' });
+                        if (response && response.text) {
+                            text = response.text;
+                            // Also save as the latest snapshot
+                            await handleSnapshotData(node.tabId, response, 'auto_name');
+                        }
+                    } catch (e) {
+                        console.log('[AI Tree] Could not get live content, using stored snapshot');
+                    }
+                }
+
+                // Fallback: use stored snapshot (for dead nodes or if live capture failed)
+                if (!text) {
+                    const snapshot = await TreeStorage.getSnapshot(message.nodeId);
+                    text = snapshot ? snapshot.text : '';
+                }
+
+                if (!text) { sendResponse({ success: false, error: 'No content available' }); return; }
 
                 const settings = await chrome.storage.local.get(['aiNamingType', 'aiApiUrl', 'aiApiKey', 'aiModel']);
                 const namingType = settings.aiNamingType || 'builtin';
@@ -314,10 +334,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                 }
 
                 if (newLabel) {
-                    node.autoLabel = newLabel;
-                    node.label = ''; // Clear manual label so autoLabel shows
-                    await TreeStorage.saveNode(node);
-                    broadcastToSidePanel({ type: 'TREE_UPDATED' });
+                    // Re-read node in case it was updated by handleSnapshotData
+                    const freshNode = await TreeStorage.getNode(message.nodeId);
+                    if (freshNode) {
+                        freshNode.autoLabel = newLabel;
+                        freshNode.label = '';
+                        await TreeStorage.saveNode(freshNode);
+                        broadcastToSidePanel({ type: 'TREE_UPDATED' });
+                    }
                 }
                 sendResponse({ success: true, label: newLabel });
             } catch (e) {
