@@ -650,16 +650,17 @@ function updateSettingsUI() {
     settingApiGroup.classList.add('hidden');
     if (builtinHint) builtinHint.classList.add('hidden');
     if (localHint) localHint.classList.add('hidden');
-    // Default show test button, hide only for local
-    if (btnTestConnection) btnTestConnection.style.display = '';
+
+    // Hide test button by default (only needed for custom API)
+    if (btnTestConnection) btnTestConnection.style.display = 'none';
 
     if (type === 'custom') {
         settingApiGroup.classList.remove('hidden');
+        if (btnTestConnection) btnTestConnection.style.display = '';
     } else if (type === 'builtin') {
         if (builtinHint) builtinHint.classList.remove('hidden');
     } else if (type === 'local') {
         if (localHint) localHint.classList.remove('hidden');
-        if (btnTestConnection) btnTestConnection.style.display = 'none';
     }
 }
 
