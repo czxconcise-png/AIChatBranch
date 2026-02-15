@@ -35,14 +35,36 @@ function capturePageContent() {
         styleTags.forEach(s => { styles += s.outerHTML; });
     } catch (e) { /* ignore */ }
 
-    // Prefer <main> element (contains conversation in most AI chat sites)
-    // Falls back to <body> if no <main> exists
-    const contentRoot = document.querySelector('main') || document.body;
+    // Find the best content root — try conversation-specific selectors first
+    // These target the main chat area on popular AI sites, skipping sidebars
+    const conversationSelectors = [
+        '[role="main"]',           // Gemini, some others
+        'main',                    // ChatGPT, Claude, general
+    ];
+
+    let contentRoot = null;
+    for (const sel of conversationSelectors) {
+        contentRoot = document.querySelector(sel);
+        if (contentRoot) break;
+    }
+    if (!contentRoot) contentRoot = document.body;
+
+    // Clone and strip sidebar/nav elements to keep only conversation content
+    const clone = contentRoot.cloneNode(true);
+    const stripSelectors = [
+        'nav', 'aside', 'header', 'footer',
+        'side-navigation', 'side-nav',                     // Gemini custom elements
+        '[role="navigation"]', '[role="complementary"]',    // ARIA roles for sidebars
+        '[role="banner"]', '[role="contentinfo"]',          // ARIA header/footer
+    ];
+    stripSelectors.forEach(sel => {
+        clone.querySelectorAll(sel).forEach(el => el.remove());
+    });
 
     return {
-        html: contentRoot ? contentRoot.innerHTML : '',
+        html: clone.innerHTML,
         styles: styles,
-        text: contentRoot ? contentRoot.innerText : '',
+        text: clone.innerText,
         title: document.title,
         url: location.href,
         capturedAt: Date.now(),
