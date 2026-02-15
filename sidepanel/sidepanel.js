@@ -151,49 +151,10 @@ function createNodeElement(node) {
     time.className = 'node-time';
     time.textContent = timeAgo;
 
-    // Actions
-    const actions = document.createElement('span');
-    actions.className = 'node-actions';
-
-    // Rename button
-    const renameBtn = document.createElement('button');
-    renameBtn.className = 'node-action-btn';
-    renameBtn.title = 'Rename';
-    renameBtn.innerHTML = '✏️';
-    renameBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        startRename(node, label);
-    });
-
-    // Snapshot button
-    const snapBtn = document.createElement('button');
-    snapBtn.className = 'node-action-btn';
-    snapBtn.title = 'View snapshot';
-    snapBtn.innerHTML = '📸';
-    snapBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        viewSnapshot(node.id);
-    });
-
-    // Delete button
-    const deleteBtn = document.createElement('button');
-    deleteBtn.className = 'node-action-btn danger';
-    deleteBtn.title = 'Delete';
-    deleteBtn.innerHTML = '🗑️';
-    deleteBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        deleteNode(node.id);
-    });
-
-    actions.appendChild(renameBtn);
-    actions.appendChild(snapBtn);
-    actions.appendChild(deleteBtn);
-
     row.appendChild(toggle);
     row.appendChild(status);
     row.appendChild(label);
     row.appendChild(time);
-    row.appendChild(actions);
 
     // Click handler — switch to tab or show snapshot
     row.addEventListener('click', () => {
@@ -493,22 +454,22 @@ function showContextMenu(event, node) {
     if (node.status === 'live') {
         items.push({ label: '🔀 Switch to Tab', action: () => switchToTab(node.tabId) });
         items.push({
-            label: '📋 复制标签 (Fork)', action: () => {
+            label: '📋 Duplicate Tab', action: () => {
                 chrome.tabs.duplicate(node.tabId);
             }
         });
     }
 
+    items.push({ separator: true });
     items.push({ label: '📷 View Snapshot', action: () => viewSnapshot(node.id) });
     items.push({
-        label: '✏️ Rename', action: () => {
-            const labelEl = document.querySelector(`[data-node-id="${node.id}"] .node-label`);
-            if (labelEl) startRename(node, labelEl);
+        label: '🤖 Auto Name', action: () => {
+            chrome.runtime.sendMessage({ type: 'AUTO_NAME_NODE', nodeId: node.id });
         }
     });
     items.push({ separator: true });
     items.push({ label: '🗑️ Delete Node', action: () => deleteNode(node.id, false) });
-    items.push({ label: '🗑️ Delete with Children', action: () => deleteNode(node.id, true), danger: true });
+    items.push({ label: '⚠️ Delete All', action: () => deleteNode(node.id, true), danger: true });
 
     items.forEach(item => {
         if (item.separator) {

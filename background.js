@@ -279,6 +279,54 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return true;
     }
 
+    if (message.type === 'AUTO_NAME_NODE') {
+        (async () => {
+            try {
+                const node = await TreeStorage.getNode(message.nodeId);
+                if (!node) { sendResponse({ success: false, error: 'Node not found' }); return; }
+
+                const snapshot = await TreeStorage.getSnapshot(message.nodeId);
+                const text = snapshot ? snapshot.text : '';
+                if (!text) { sendResponse({ success: false, error: 'No snapshot' }); return; }
+
+                const settings = await chrome.storage.local.get(['aiNamingType', 'aiApiUrl', 'aiApiKey', 'aiModel']);
+                const namingType = settings.aiNamingType || 'builtin';
+                const apiContext = text.slice(-5000);
+                let newLabel = '';
+
+                if (namingType === 'builtin') {
+                    try {
+                        newLabel = await generateTitleWithFallback(apiContext, null, BUILTIN_API_URL);
+                    } catch (e) {
+                        newLabel = extractAutoLabel(text);
+                    }
+                } else if (namingType === 'custom' && settings.aiApiKey) {
+                    try {
+                        const baseUrl = settings.aiApiUrl || 'https://api.openai.com/v1';
+                        newLabel = await generateTitleFromOpenAICompatible(
+                            apiContext, settings.aiApiKey, settings.aiModel, baseUrl
+                        );
+                    } catch (e) {
+                        newLabel = extractAutoLabel(text);
+                    }
+                } else {
+                    newLabel = extractAutoLabel(text);
+                }
+
+                if (newLabel) {
+                    node.autoLabel = newLabel;
+                    node.label = ''; // Clear manual label so autoLabel shows
+                    await TreeStorage.saveNode(node);
+                    broadcastToSidePanel({ type: 'TREE_UPDATED' });
+                }
+                sendResponse({ success: true, label: newLabel });
+            } catch (e) {
+                sendResponse({ success: false, error: e.message });
+            }
+        })();
+        return true;
+    }
+
     if (message.type === 'DELETE_NODE') {
         handleDeleteNode(message.nodeId, message.withChildren || false).then(() => {
             sendResponse({ success: true });
