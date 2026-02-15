@@ -368,10 +368,82 @@ function showSnapshotHTML(html, pageStyles) {
 
 function showSnapshotText(text) {
     snapshotContent.innerHTML = '';
-    const div = document.createElement('div');
-    div.className = 'text-view';
-    div.textContent = text || '(No text content)';
-    snapshotContent.appendChild(div);
+
+    if (!text || !text.trim()) {
+        const div = document.createElement('div');
+        div.className = 'text-view';
+        div.textContent = '(No text content)';
+        snapshotContent.appendChild(div);
+        return;
+    }
+
+    // Format text into paragraphs: split by double newlines, preserve single newlines
+    const paragraphs = text.split(/\n{2,}/)
+        .map(p => p.trim())
+        .filter(p => p.length > 0);
+
+    const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+    const bg = isDark ? '#1a1a24' : '#fafafa';
+    const fg = isDark ? '#d8d8e8' : '#2a2a3e';
+    const muted = isDark ? '#7a7a9a' : '#6a6a8a';
+    const border = isDark ? '#2a2a3e' : '#e0e0e8';
+    const codeBg = isDark ? '#22223a' : '#f0f0f5';
+
+    const escapeHtmlStr = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+    // Build formatted HTML from text paragraphs
+    const htmlParagraphs = paragraphs.map(p => {
+        const lines = p.split('\n');
+        // Detect code blocks (lines starting with spaces/tabs or common code patterns)
+        const looksLikeCode = lines.length > 1 && lines.every(l =>
+            l.startsWith('  ') || l.startsWith('\t') || l.match(/^[\s]*[{}\[\]();]/)
+        );
+        if (looksLikeCode) {
+            return `<pre><code>${escapeHtmlStr(p)}</code></pre>`;
+        }
+        return `<p>${escapeHtmlStr(p).replace(/\n/g, '<br>')}</p>`;
+    }).join('\n');
+
+    const readerCSS = `
+        *, *::before, *::after { box-sizing: border-box; }
+        body {
+            background: ${bg};
+            color: ${fg};
+            font-family: -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+            font-size: 14px;
+            line-height: 1.8;
+            padding: 20px;
+            margin: 0;
+            word-wrap: break-word;
+            overflow-wrap: break-word;
+        }
+        p {
+            margin: 0.6em 0;
+        }
+        pre {
+            background: ${codeBg};
+            border: 1px solid ${border};
+            border-radius: 6px;
+            padding: 14px 16px;
+            overflow-x: auto;
+            margin: 0.8em 0;
+            line-height: 1.5;
+        }
+        code {
+            font-family: 'Consolas', 'Monaco', 'Menlo', monospace;
+            font-size: 13px;
+        }
+        ::selection {
+            background: ${isDark ? '#3a3a6a' : '#b3d4fc'};
+        }
+    `;
+
+    const iframe = document.createElement('iframe');
+    iframe.style.width = '100%';
+    iframe.style.height = '100%';
+    iframe.style.border = 'none';
+    iframe.srcdoc = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>${readerCSS}</style></head><body>${htmlParagraphs}</body></html>`;
+    snapshotContent.appendChild(iframe);
 }
 
 function closeSnapshot() {
