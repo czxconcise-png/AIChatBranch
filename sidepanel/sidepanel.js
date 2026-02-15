@@ -625,7 +625,14 @@ function goBackToMain() {
 function openSettings() {
     // Load all settings
     chrome.storage.local.get(['aiNamingType', 'aiApiUrl', 'aiApiKey', 'aiModel', 'theme'], (result) => {
-        settingNamingType.value = result.aiNamingType || 'builtin';
+        // Validate naming type (ensure it's one of the valid options)
+        const validTypes = ['builtin', 'custom', 'local'];
+        let namingType = result.aiNamingType || 'builtin';
+        if (!validTypes.includes(namingType)) {
+            namingType = 'builtin';
+        }
+        settingNamingType.value = namingType;
+
         settingApiUrl.value = result.aiApiUrl || 'https://api.openai.com/v1';
         settingApiKey.value = result.aiApiKey || '';
         settingModel.value = result.aiModel || 'gpt-3.5-turbo';
@@ -652,11 +659,12 @@ function updateSettingsUI() {
     if (localHint) localHint.classList.add('hidden');
 
     // Hide test button by default (only needed for custom API)
-    if (btnTestConnection) btnTestConnection.style.display = 'none';
+    // Hide test button by default (only needed for custom API)
+    // if (btnTestConnection) btnTestConnection.style.display = 'none'; // Handled by CSS
 
     if (type === 'custom') {
         settingApiGroup.classList.remove('hidden');
-        if (btnTestConnection) btnTestConnection.style.display = '';
+        // if (btnTestConnection) btnTestConnection.style.display = '';
     } else if (type === 'builtin') {
         if (builtinHint) builtinHint.classList.remove('hidden');
     } else if (type === 'local') {
