@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>Generate Icons</title>
+    <style>
+        body {
+            font-family: sans-serif;
+            padding: 20px;
+            background: #f0f0f0;
+        }
+
+        .container {
+            max-width: 600px;
+            margin: 0 auto;
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+        }
+
+        h1 {
+            margin-top: 0;
+        }
+
+        .icon-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin: 20px 0;
+            padding: 10px;
+            border: 1px solid #eee;
+            border-radius: 4px;
+        }
+
+        .preview {
+            border: 1px dashed #ccc;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: transparent;
+        }
+
+        button {
+            padding: 8px 16px;
+            background: #4ade80;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+
+        button:hover {
+            background: #22c55e;
+        }
+    </style>
+</head>
+
+<body>
+
+    <div class="container">
+        <h1>Extension Icons Generator</h1>
+        <p>The extension needs PNG icons in 16x16, 48x48, and 128x128 sizes. Click "Download" for each size below to
+            save them to your <code>icons/</code> folder.</p>
+
+        <div class="icon-row">
+            <div>
+                <h3>16x16</h3>
+                <div id="preview-16" class="preview" style="width: 32px; height: 32px;"></div>
+            </div>
+            <button onclick="downloadIcon(16)">Download icon16.png</button>
+        </div>
+
+        <div class="icon-row">
+            <div>
+                <h3>48x48</h3>
+                <div id="preview-48" class="preview" style="width: 64px; height: 64px;"></div>
+            </div>
+            <button onclick="downloadIcon(48)">Download icon48.png</button>
+        </div>
+
+        <div class="icon-row">
+            <div>
+                <h3>128x128</h3>
+                <div id="preview-128" class="preview" style="width: 140px; height: 140px;"></div>
+            </div>
+            <button onclick="downloadIcon(128)">Download icon128.png</button>
+        </div>
+
+    </div>
+
+    <!-- SVG Source -->
+    <svg id="source-svg" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" style="display:none;">
+        <defs>
+            <linearGradient id="grad" x1="0%" y1="0%" x2="100%" y2="100%">
+                <stop offset="0%" style="stop-color:#7c6ff7;stop-opacity:1" />
+                <stop offset="100%" style="stop-color:#4ade80;stop-opacity:1" />
+            </linearGradient>
+        </defs>
+        <rect width="128" height="128" rx="24" fill="url(#grad)" />
+        <path d="M64 24v80M64 24l-32 32M64 24l32 32M24 64h80M24 64l32-32M24 64l32 32" stroke="white" stroke-width="12"
+            stroke-linecap="round" stroke-linejoin="round" fill="none" opacity="0.9"
+            transform="rotate(180 64 64) scale(0.6) translate(42 42)" />
+        <!-- Simplified Tree Icon -->
+        <circle cx="64" cy="100" r="10" fill="white" />
+        <path d="M64 90v-20" stroke="white" stroke-width="8" stroke-linecap="round" />
+        <path d="M64 70L34 50" stroke="white" stroke-width="8" stroke-linecap="round" />
+        <path d="M64 70L94 50" stroke="white" stroke-width="8" stroke-linecap="round" />
+        <circle cx="34" cy="50" r="10" fill="white" />
+        <circle cx="94" cy="50" r="10" fill="white" />
+        <path d="M34 40v-10" stroke="white" stroke-width="6" stroke-linecap="round" />
+        <path d="M94 40v-10" stroke="white" stroke-width="6" stroke-linecap="round" />
+        <circle cx="34" cy="22" r="8" fill="white" opacity="0.8" />
+        <circle cx="94" cy="22" r="8" fill="white" opacity="0.8" />
+    </svg>
+
+    <script>
+        function renderSVG(size, containerId) {
+            const svg = document.getElementById('source-svg').cloneNode(true);
+            svg.style.display = 'block';
+            svg.setAttribute('width', size);
+            svg.setAttribute('height', size);
+
+            // For preview, we scale it up a bit if it's too small, just for display
+            const previewSize = size < 32 ? 32 : size;
+            const previewSvg = svg.cloneNode(true);
+            previewSvg.setAttribute('width', previewSize);
+            previewSvg.setAttribute('height', previewSize);
+            document.getElementById(containerId).appendChild(previewSvg);
+        }
+
+        renderSVG(16, 'preview-16');
+        renderSVG(48, 'preview-48');
+        renderSVG(128, 'preview-128');
+
+        function downloadIcon(size) {
+            const canvas = document.createElement('canvas');
+            canvas.width = size;
+            canvas.height = size;
+            const ctx = canvas.getContext('2d');
+
+            const svgData = new XMLSerializer().serializeToString(document.getElementById('source-svg'));
+            const img = new Image();
+            const svgBlob = new Blob([svgData], { type: 'image/svg+xml;charset=utf-8' });
+            const url = URL.createObjectURL(svgBlob);
+
+            img.onload = function () {
+                ctx.drawImage(img, 0, 0, size, size);
+                URL.revokeObjectURL(url);
+
+                const a = document.createElement('a');
+                a.download = `icon${size}.png`;
+                a.href = canvas.toDataURL('image/png');
+                a.click();
+            };
+
+            img.src = url;
+        }
+    </script>
+
+</body>
+
+</html>

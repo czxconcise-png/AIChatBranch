@@ -1,0 +1,22 @@
+# OS files
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Node (in case npm is used later)
+node_modules/
+package-lock.json
+
+# Chrome extension build artifacts
+*.crx
+*.pem
+*.zip
+
+# Gemini agent artifacts
+.gemini/
