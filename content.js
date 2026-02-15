@@ -35,10 +35,14 @@ function capturePageContent() {
         styleTags.forEach(s => { styles += s.outerHTML; });
     } catch (e) { /* ignore */ }
 
+    // Prefer <main> element (contains conversation in most AI chat sites)
+    // Falls back to <body> if no <main> exists
+    const contentRoot = document.querySelector('main') || document.body;
+
     return {
-        html: document.body ? document.body.innerHTML : '',
+        html: contentRoot ? contentRoot.innerHTML : '',
         styles: styles,
-        text: document.body ? document.body.innerText : '',
+        text: contentRoot ? contentRoot.innerText : '',
         title: document.title,
         url: location.href,
         capturedAt: Date.now(),
