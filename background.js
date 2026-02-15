@@ -14,7 +14,7 @@ importScripts('storage.js');
 // ── SiliconFlow Free Model Pool ──
 // Used for built-in AI auto-naming via Cloudflare Worker proxy.
 // Models are tried in order; on 429 rate limit, the next model is used.
-const BUILTIN_API_URL = 'https://aichattree-api.placeholder.workers.dev/v1'; // TODO: replace with real Worker URL
+const BUILTIN_API_URL = 'https://aichattree-api.czx-ai.workers.dev/v1';
 const SILICONFLOW_MODELS = [
     'Qwen/Qwen2.5-7B-Instruct',
     'THUDM/glm-4-9b-chat',
