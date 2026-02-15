@@ -279,73 +279,128 @@ async function viewSnapshot(nodeId) {
 function showSnapshotHTML(html, pageStyles) {
     snapshotContent.innerHTML = '';
 
-    // Clean captured HTML: remove scripts and inline event handlers
+    // ── Reader-mode cleanup ──
+    // Strip scripts, event handlers, and non-content elements
     let cleanHtml = (html || '')
         .replace(/<script[\s\S]*?<\/script>/gi, '')
+        .replace(/<style[\s\S]*?<\/style>/gi, '')
+        .replace(/<svg[\s\S]*?<\/svg>/gi, '')
+        .replace(/<button[\s\S]*?<\/button>/gi, '')
+        .replace(/<nav[\s\S]*?<\/nav>/gi, '')
+        .replace(/<header[\s\S]*?<\/header>/gi, '')
+        .replace(/<footer[\s\S]*?<\/footer>/gi, '')
+        .replace(/<aside[\s\S]*?<\/aside>/gi, '')
+        .replace(/<iframe[\s\S]*?<\/iframe>/gi, '')
+        .replace(/<input[^>]*>/gi, '')
+        .replace(/<textarea[\s\S]*?<\/textarea>/gi, '')
+        .replace(/<select[\s\S]*?<\/select>/gi, '')
         .replace(/\s(on\w+)\s*=\s*(["'])[\s\S]*?\2/gi, '');
+
+    // Strip all class and style attributes for a clean slate
+    cleanHtml = cleanHtml
+        .replace(/\s+class\s*=\s*"[^"]*"/gi, '')
+        .replace(/\s+class\s*=\s*'[^']*'/gi, '')
+        .replace(/\s+style\s*=\s*"[^"]*"/gi, '')
+        .replace(/\s+style\s*=\s*'[^']*'/gi, '')
+        .replace(/\s+data-[\w-]+\s*=\s*"[^"]*"/gi, '')
+        .replace(/\s+data-[\w-]+\s*=\s*'[^']*'/gi, '');
 
     if (!cleanHtml.trim()) {
         cleanHtml = '<p style="color:#888; text-align:center; padding:40px;">Empty page</p>';
     }
 
-    // Clean captured styles (remove @import, external references)
-    const cleanStyles = (pageStyles || '')
-        .replace(/<script[\s\S]*?<\/script>/gi, '')
-        .replace(/@import[^;]+;/gi, '');
-
-    // Detect system theme
+    // ── Reader-mode CSS ──
     const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-    const bg = isDark ? '#1a1a24' : '#fff';
-    const fg = isDark ? '#e8e8f0' : '#1a1a2e';
+    const bg = isDark ? '#1a1a24' : '#fafafa';
+    const fg = isDark ? '#d8d8e8' : '#2a2a3e';
+    const muted = isDark ? '#7a7a9a' : '#6a6a8a';
+    const border = isDark ? '#2a2a3e' : '#e0e0e8';
+    const codeBg = isDark ? '#22223a' : '#f0f0f5';
+    const accent = isDark ? '#7c9fff' : '#2563eb';
 
-    // Readable fallback CSS for content that has no original styles
-    const fallbackCSS = `
+    const readerCSS = `
+        *, *::before, *::after { box-sizing: border-box; }
         body {
             background: ${bg};
             color: ${fg};
-            font-family: -apple-system, 'Segoe UI', sans-serif;
+            font-family: -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
             font-size: 14px;
-            line-height: 1.7;
-            padding: 16px;
+            line-height: 1.75;
+            padding: 20px;
             max-width: 100%;
             word-wrap: break-word;
+            overflow-wrap: break-word;
+            margin: 0;
         }
+        /* Collapse empty divs and deeply nested wrappers */
+        div { margin: 0; padding: 0; }
+        /* Headings */
         h1, h2, h3, h4, h5, h6 {
-            margin: 1em 0 0.5em;
-            line-height: 1.3;
+            margin: 1.2em 0 0.5em;
+            line-height: 1.35;
+            font-weight: 600;
         }
-        h1 { font-size: 1.6em; }
+        h1 { font-size: 1.5em; border-bottom: 1px solid ${border}; padding-bottom: 0.3em; }
         h2 { font-size: 1.3em; }
         h3 { font-size: 1.1em; }
-        p { margin: 0.5em 0; }
+        /* Paragraphs & text */
+        p { margin: 0.6em 0; }
+        strong, b { font-weight: 600; }
+        em, i { font-style: italic; }
+        /* Lists */
         ul, ol { margin: 0.5em 0; padding-left: 1.5em; }
-        li { margin: 0.3em 0; }
+        li { margin: 0.25em 0; }
+        /* Code */
         pre, code {
-            background: ${isDark ? '#24243a' : '#f0f0f5'};
-            border-radius: 4px;
-            font-family: 'Consolas', 'Monaco', monospace;
+            background: ${codeBg};
+            border-radius: 6px;
+            font-family: 'Consolas', 'Monaco', 'Menlo', monospace;
             font-size: 13px;
         }
-        pre { padding: 12px; overflow-x: auto; margin: 0.5em 0; }
-        code { padding: 2px 5px; }
-        pre code { padding: 0; background: none; }
-        img { max-width: 100%; height: auto; }
-        a { color: ${isDark ? '#7c9fff' : '#2563eb'}; }
-        table { border-collapse: collapse; margin: 0.5em 0; }
-        td, th { border: 1px solid ${isDark ? '#2a2a3e' : '#d8d8e8'}; padding: 6px 10px; }
-        blockquote {
-            border-left: 3px solid ${isDark ? '#7c6ff7' : '#6355e0'};
-            margin: 0.5em 0;
-            padding: 4px 12px;
-            color: ${isDark ? '#9494b8' : '#5a5a7a'};
+        pre {
+            padding: 14px 16px;
+            overflow-x: auto;
+            margin: 0.8em 0;
+            border: 1px solid ${border};
+            line-height: 1.5;
         }
+        code { padding: 2px 6px; }
+        pre code { padding: 0; background: none; border: none; font-size: inherit; }
+        /* Links */
+        a { color: ${accent}; text-decoration: none; }
+        a:hover { text-decoration: underline; }
+        /* Tables */
+        table { border-collapse: collapse; margin: 0.8em 0; width: 100%; }
+        td, th {
+            border: 1px solid ${border};
+            padding: 8px 12px;
+            text-align: left;
+        }
+        th { font-weight: 600; background: ${codeBg}; }
+        /* Blockquotes */
+        blockquote {
+            border-left: 3px solid ${accent};
+            margin: 0.8em 0;
+            padding: 6px 16px;
+            color: ${muted};
+            background: ${codeBg};
+            border-radius: 0 6px 6px 0;
+        }
+        /* Images */
+        img { max-width: 100%; height: auto; border-radius: 6px; margin: 0.5em 0; }
+        /* Horizontal rules */
+        hr { border: none; border-top: 1px solid ${border}; margin: 1.5em 0; }
+        /* Hide empty elements */
+        span:empty, div:empty, p:empty { display: none; }
+        /* Reasonable spacing for generic divs with text */
+        div:not(:empty) + div:not(:empty) { margin-top: 0.3em; }
     `;
 
     const iframe = document.createElement('iframe');
     iframe.style.width = '100%';
     iframe.style.height = '100%';
     iframe.style.border = 'none';
-    iframe.srcdoc = `<!DOCTYPE html><html><head><style>${fallbackCSS}</style>${cleanStyles}</head><body>${cleanHtml}</body></html>`;
+    iframe.srcdoc = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>${readerCSS}</style></head><body>${cleanHtml}</body></html>`;
 
     snapshotContent.appendChild(iframe);
 }
