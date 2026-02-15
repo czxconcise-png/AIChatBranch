@@ -125,17 +125,22 @@
             <div style="width: 56px;"></div>
           </div>
           <div class="settings-body">
-            <p class="settings-desc">自动分析对话内容，为每个节点生成简短标题。可使用本地算法，或接入 AI API 获得更精准的命名。</p>
+            <p class="settings-desc">自动分析对话内容，为每个节点生成简短标题。</p>
             <div class="form-group">
               <label for="setting-naming-type">命名方式</label>
               <select id="setting-naming-type" class="form-control">
+                <option value="builtin">AI 自动命名（内置，推荐）</option>
+                <option value="custom">自定义 API</option>
                 <option value="local">本地算法</option>
-                <option value="api">在线 AI API</option>
               </select>
             </div>
 
+            <div id="setting-builtin-hint" class="form-hint" style="margin: 8px 0 0;">
+              使用内置 AI 服务自动命名，无需任何配置。
+            </div>
+
             <div id="setting-api-group" class="hidden">
-              <p class="form-hint" style="margin-bottom: 12px;">支持 OpenAI、Gemini、Claude (via Proxy)、OneAPI 等兼容接口。</p>
+              <p class="form-hint" style="margin-bottom: 12px;">支持 OpenAI、Gemini、Claude (via Proxy)、SiliconFlow 等兼容接口。</p>
               <div class="form-group">
                 <label for="setting-api-url">Base URL</label>
                 <input type="text" id="setting-api-url" class="form-control" placeholder="https://api.openai.com/v1">
@@ -149,6 +154,10 @@
                 <input type="text" id="setting-model" class="form-control" placeholder="gpt-3.5-turbo">
               </div>
               <button id="btn-test-connection" class="btn btn-secondary btn-full">测试连接 (Test)</button>
+            </div>
+
+            <div id="setting-local-hint" class="form-hint hidden" style="margin: 8px 0 0;">
+              使用本地文本分析算法，无需联网，但准确度较低。
             </div>
 
             <button id="btn-save-naming" class="btn btn-primary btn-full" style="margin-top: 16px;">保存 (Save)</button>

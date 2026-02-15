@@ -11,6 +11,20 @@
 
 importScripts('storage.js');
 
+// ── SiliconFlow Free Model Pool ──
+// Used for built-in AI auto-naming via Cloudflare Worker proxy.
+// Models are tried in order; on 429 rate limit, the next model is used.
+const BUILTIN_API_URL = 'https://aichattree-api.placeholder.workers.dev/v1'; // TODO: replace with real Worker URL
+const SILICONFLOW_MODELS = [
+    'Qwen/Qwen2.5-7B-Instruct',
+    'THUDM/glm-4-9b-chat',
+    'internlm/internlm2_5-7b-chat',
+    'Qwen/Qwen2-7B-Instruct',
+    'Qwen/Qwen2-1.5B-Instruct',
+];
+const modelCooldowns = new Map(); // modelId → timestamp when cooldown expires
+const MODEL_COOLDOWN_MS = 60_000; // 60 seconds
+
 // ── Tracked state (in-memory mirror, persisted to IndexedDB) ──
 // Map of tabId -> nodeId for quick lookup
 const tabToNode = new Map();
@@ -284,8 +298,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
 
     if (message.type === 'TEST_API_CONNECTION') {
-        // Reuse the same function but with a dummy input
-        generateTitleFromOpenAICompatible('test', message.apiKey, message.model, message.baseUrl)
+        const testFn = message.apiKey
+            ? generateTitleFromOpenAICompatible('test', message.apiKey, message.model, message.baseUrl)
+            : generateTitleWithFallback('test', null, BUILTIN_API_URL);
+        testFn
             .then(() => {
                 sendResponse({ success: true });
             })
@@ -323,30 +339,40 @@ async function handleSnapshotData(tabId, data, reason) {
     await TreeStorage.saveSnapshot(snapshot);
 
     // Auto-naming: skip if user set a manual label
-    // Auto-naming: skip if user set a manual label
     const node = await TreeStorage.getNode(nodeId);
     if (node && !node.label) {
         let newAutoLabel = '';
 
         // Prioritize explicit new content detected by MutationObserver
         if (data.recentlyAdded) {
-            // Check settings for API-based auto-naming
             const settings = await chrome.storage.local.get(['aiNamingType', 'aiApiUrl', 'aiApiKey', 'aiModel']);
+            const namingType = settings.aiNamingType || 'builtin';
 
-            // Use last 5000 chars of page text + recentlyAdded to ensure full context of latest Q&A
+            // Use last 5000 chars of page text + recentlyAdded to ensure full context
             const fullContext = (data.text || '') + '\n' + (data.recentlyAdded || '');
             const apiContext = fullContext.slice(-5000);
 
-            if (settings.aiNamingType === 'api' && settings.aiApiKey) {
+            if (namingType === 'builtin') {
+                // Built-in: use Cloudflare Worker proxy with model rotation
                 try {
-                    // Default to OpenAI URL if missing
-                    const baseUrl = settings.aiApiUrl || 'https://api.openai.com/v1';
-                    newAutoLabel = await generateTitleFromOpenAICompatible(apiContext, settings.aiApiKey, settings.aiModel, baseUrl);
+                    newAutoLabel = await generateTitleWithFallback(apiContext, null, BUILTIN_API_URL);
                 } catch (e) {
-                    console.error('API Auto-naming failed:', e);
+                    console.error('[AI Tree] Built-in AI naming failed, falling back to local:', e);
+                    newAutoLabel = extractLabelFromNewText(data.recentlyAdded);
+                }
+            } else if (namingType === 'custom' && settings.aiApiKey) {
+                // Custom API: user-provided URL/key/model
+                try {
+                    const baseUrl = settings.aiApiUrl || 'https://api.openai.com/v1';
+                    newAutoLabel = await generateTitleFromOpenAICompatible(
+                        apiContext, settings.aiApiKey, settings.aiModel, baseUrl
+                    );
+                } catch (e) {
+                    console.error('[AI Tree] Custom API naming failed, falling back to local:', e);
                     newAutoLabel = extractLabelFromNewText(data.recentlyAdded);
                 }
             } else {
+                // Local algorithm
                 newAutoLabel = extractLabelFromNewText(data.recentlyAdded);
             }
         }
@@ -551,17 +577,26 @@ chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => 
 
 // ── API Helpers ──
 
+/**
+ * Call an OpenAI-compatible chat completion endpoint.
+ * @param {string} text - User text to summarize
+ * @param {string|null} apiKey - API key (null for built-in proxy which injects its own)
+ * @param {string} model - Model ID
+ * @param {string} baseUrl - API base URL
+ * @throws {RateLimitError} on HTTP 429
+ */
 async function generateTitleFromOpenAICompatible(text, apiKey, model, baseUrl) {
-    // Ensure baseUrl doesn't end with slash
     const cleanBaseUrl = (baseUrl || 'https://api.openai.com/v1').replace(/\/$/, '');
     const url = `${cleanBaseUrl}/chat/completions`;
 
+    const headers = { 'Content-Type': 'application/json' };
+    if (apiKey) {
+        headers['Authorization'] = `Bearer ${apiKey}`;
+    }
+
     const response = await fetch(url, {
         method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${apiKey}`
-        },
+        headers,
         body: JSON.stringify({
             model: model || 'gpt-3.5-turbo',
             messages: [
@@ -572,6 +607,10 @@ async function generateTitleFromOpenAICompatible(text, apiKey, model, baseUrl) {
         })
     });
 
+    if (response.status === 429) {
+        throw new RateLimitError(`Rate limited (429) for model: ${model}`);
+    }
+
     if (!response.ok) {
         const errText = await response.text();
         throw new Error(`API Error ${response.status}: ${errText}`);
@@ -579,15 +618,55 @@ async function generateTitleFromOpenAICompatible(text, apiKey, model, baseUrl) {
 
     const data = await response.json();
     if (data.error) throw new Error(data.error.message || 'API Error');
-
     if (!data.choices || !data.choices.length || !data.choices[0].message) throw new Error('No content from API');
 
     const content = data.choices[0].message.content;
     if (!content) throw new Error('Empty content from API');
 
     let title = content.trim();
-    // Clean quotes
     return title.replace(/^["']|["']$/g, '').replace(/\.$/, '');
 }
 
+/** Custom error for 429 rate limits */
+class RateLimitError extends Error {
+    constructor(message) {
+        super(message);
+        this.name = 'RateLimitError';
+    }
+}
 
+/**
+ * Try generating a title by iterating through the free model pool.
+ * Skips models that are cooling down from recent 429 errors.
+ * Falls back to local algorithm if all models fail.
+ */
+async function generateTitleWithFallback(text, apiKey, baseUrl) {
+    const now = Date.now();
+
+    for (const model of SILICONFLOW_MODELS) {
+        // Skip models in cooldown
+        const cooldownUntil = modelCooldowns.get(model);
+        if (cooldownUntil && now < cooldownUntil) {
+            console.log(`[AI Tree] Skipping ${model} (cooling down)`);
+            continue;
+        }
+
+        try {
+            const title = await generateTitleFromOpenAICompatible(text, apiKey, model, baseUrl);
+            if (title) return title;
+        } catch (e) {
+            if (e instanceof RateLimitError) {
+                console.warn(`[AI Tree] Rate limited on ${model}, cooling down 60s`);
+                modelCooldowns.set(model, now + MODEL_COOLDOWN_MS);
+                continue; // try next model
+            }
+            // Other errors: log and try next model too
+            console.error(`[AI Tree] Error with ${model}:`, e.message);
+            continue;
+        }
+    }
+
+    // All models exhausted
+    console.warn('[AI Tree] All models failed or cooling down, using local fallback');
+    return ''; // caller will use local fallback
+}

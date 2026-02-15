@@ -625,7 +625,7 @@ function goBackToMain() {
 function openSettings() {
     // Load all settings
     chrome.storage.local.get(['aiNamingType', 'aiApiUrl', 'aiApiKey', 'aiModel', 'theme'], (result) => {
-        settingNamingType.value = result.aiNamingType || 'local';
+        settingNamingType.value = result.aiNamingType || 'builtin';
         settingApiUrl.value = result.aiApiUrl || 'https://api.openai.com/v1';
         settingApiKey.value = result.aiApiKey || '';
         settingModel.value = result.aiModel || 'gpt-3.5-turbo';
@@ -643,10 +643,20 @@ function closeSettings() {
 
 function updateSettingsUI() {
     const type = settingNamingType.value;
-    if (type === 'api') {
+    const builtinHint = document.getElementById('setting-builtin-hint');
+    const localHint = document.getElementById('setting-local-hint');
+
+    // Show/hide sections based on mode
+    settingApiGroup.classList.add('hidden');
+    if (builtinHint) builtinHint.classList.add('hidden');
+    if (localHint) localHint.classList.add('hidden');
+
+    if (type === 'custom') {
         settingApiGroup.classList.remove('hidden');
-    } else {
-        settingApiGroup.classList.add('hidden');
+    } else if (type === 'builtin') {
+        if (builtinHint) builtinHint.classList.remove('hidden');
+    } else if (type === 'local') {
+        if (localHint) localHint.classList.remove('hidden');
     }
 }
 
@@ -654,16 +664,16 @@ function updateSettingsUI() {
 
 function saveNamingSettings() {
     const namingType = settingNamingType.value;
-    const apiUrl = (settingApiUrl.value.trim() || 'https://api.openai.com/v1').replace(/\/$/, '');
-    const apiKey = settingApiKey.value.trim();
-    const model = settingModel.value.trim();
+    const settings = { aiNamingType: namingType };
 
-    chrome.storage.local.set({
-        aiNamingType: namingType,
-        aiApiUrl: apiUrl,
-        aiApiKey: apiKey,
-        aiModel: model
-    }, () => {
+    // Only save custom API fields if in custom mode
+    if (namingType === 'custom') {
+        settings.aiApiUrl = (settingApiUrl.value.trim() || 'https://api.openai.com/v1').replace(/\/$/, '');
+        settings.aiApiKey = settingApiKey.value.trim();
+        settings.aiModel = settingModel.value.trim();
+    }
+
+    chrome.storage.local.set(settings, () => {
         goBackToMain();
     });
 }
@@ -695,22 +705,27 @@ function testConnection() {
     btnTestConnection.innerText = 'Testing...';
     btnTestConnection.disabled = true;
 
-    const apiKey = settingApiKey.value.trim();
-    const baseUrl = (settingApiUrl.value.trim() || 'https://api.openai.com/v1').replace(/\/$/, '');
-    const model = settingModel.value.trim();
+    const namingType = settingNamingType.value;
+    let apiKey, baseUrl, model;
 
-    if (!apiKey) {
-        alert('请先输入 API Key');
-        btnTestConnection.innerText = originalText;
-        btnTestConnection.disabled = false;
-        return;
+    if (namingType === 'custom') {
+        apiKey = settingApiKey.value.trim();
+        baseUrl = (settingApiUrl.value.trim() || 'https://api.openai.com/v1').replace(/\/$/, '');
+        model = settingModel.value.trim();
+
+        if (!apiKey) {
+            alert('请先输入 API Key');
+            resetButton();
+            return;
+        }
     }
+    // For builtin mode, apiKey/baseUrl/model are handled by background.js
 
     chrome.runtime.sendMessage({
         type: 'TEST_API_CONNECTION',
-        apiKey,
-        baseUrl,
-        model
+        apiKey: apiKey || '',
+        baseUrl: baseUrl || '',
+        model: model || ''
     }, (response) => {
         if (chrome.runtime.lastError) {
             alert('Error: ' + chrome.runtime.lastError.message);
