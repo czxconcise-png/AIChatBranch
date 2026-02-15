@@ -493,8 +493,8 @@ function showContextMenu(event, node) {
     if (node.status === 'live') {
         items.push({ label: '🔀 Switch to Tab', action: () => switchToTab(node.tabId) });
         items.push({
-            label: '📸 Force Snapshot', action: () => {
-                chrome.runtime.sendMessage({ type: 'FORCE_SNAPSHOT', tabId: node.tabId });
+            label: '📋 复制标签 (Fork)', action: () => {
+                chrome.tabs.duplicate(node.tabId);
             }
         });
     }
