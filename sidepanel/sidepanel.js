@@ -8,6 +8,8 @@ let expandedNodes = new Set();
 let activeSnapshotNodeId = null;
 let activeTabId = null;
 let currentLanguage = 'en';
+let draggingNodeId = null;
+let currentDropTargetNodeId = null;
 
 const I18N = {
     en: {
@@ -70,6 +72,7 @@ const I18N = {
         menuDuplicateTab: 'Duplicate Tab',
         menuViewSnapshot: 'View Snapshot',
         menuAutoName: 'Auto Name',
+        namingInProgress: 'Naming...',
         menuDeleteNode: 'Delete Node',
         menuDeleteWithChildren: 'Delete with Children',
         testing: 'Testing...',
@@ -140,6 +143,7 @@ const I18N = {
         menuDuplicateTab: '\u590d\u5236\u6807\u7b7e\u9875',
         menuViewSnapshot: '\u67e5\u770b\u5feb\u7167',
         menuAutoName: '\u81ea\u52a8\u547d\u540d',
+        namingInProgress: '\u547d\u540d\u4e2d...',
         menuDeleteNode: '\u5220\u9664\u8282\u70b9',
         menuDeleteWithChildren: '\u5220\u9664\u53ca\u5b50\u8282\u70b9',
         testing: '\u6d4b\u8bd5\u4e2d...',
@@ -349,6 +353,7 @@ function renderTree() {
     if (treeNodes.length === 0) {
         emptyState.style.display = '';
         treeContainer.style.display = 'none';
+        clearDragDropState();
         return;
     }
 
@@ -357,9 +362,83 @@ function renderTree() {
 
     const roots = buildTreeHierarchy(treeNodes);
     treeContainer.innerHTML = '';
+    treeContainer.classList.remove('root-drop-target');
+    currentDropTargetNodeId = null;
 
     roots.forEach(root => {
         treeContainer.appendChild(createNodeElement(root));
+    });
+}
+
+function collectDescendantIds(nodeId) {
+    const descendants = new Set();
+    const queue = [nodeId];
+    while (queue.length > 0) {
+        const current = queue.shift();
+        treeNodes.forEach((node) => {
+            if (node.parentId === current && !descendants.has(node.id)) {
+                descendants.add(node.id);
+                queue.push(node.id);
+            }
+        });
+    }
+    return descendants;
+}
+
+function canMoveNode(nodeId, newParentId) {
+    if (!nodeId) return false;
+    if (newParentId === nodeId) return false;
+    if (!newParentId) return true;
+    const descendants = collectDescendantIds(nodeId);
+    return !descendants.has(newParentId);
+}
+
+function clearDropTargetHighlight() {
+    treeContainer.querySelectorAll('.node-row.drop-target').forEach((row) => {
+        row.classList.remove('drop-target');
+    });
+    treeContainer.classList.remove('root-drop-target');
+    currentDropTargetNodeId = null;
+}
+
+function setNodeDropTarget(nodeId) {
+    if (!nodeId || currentDropTargetNodeId === nodeId) return;
+    clearDropTargetHighlight();
+    const row = treeContainer.querySelector(`.node-row[data-node-id="${nodeId}"]`);
+    if (!row) return;
+    row.classList.add('drop-target');
+    currentDropTargetNodeId = nodeId;
+}
+
+function setRootDropTarget() {
+    if (treeContainer.classList.contains('root-drop-target')) return;
+    clearDropTargetHighlight();
+    treeContainer.classList.add('root-drop-target');
+}
+
+function clearDragDropState() {
+    draggingNodeId = null;
+    clearDropTargetHighlight();
+    treeContainer.querySelectorAll('.node-row.dragging').forEach((row) => {
+        row.classList.remove('dragging');
+    });
+}
+
+function moveNode(nodeId, newParentId) {
+    return new Promise((resolve) => {
+        chrome.runtime.sendMessage({ type: 'MOVE_NODE', nodeId: nodeId, newParentId: newParentId }, (response) => {
+            if (chrome.runtime.lastError) {
+                alert(`${t('runtimeErrorPrefix')}: ${chrome.runtime.lastError.message}`);
+                resolve(false);
+                return;
+            }
+            if (!response || !response.success) {
+                alert(`${t('runtimeErrorPrefix')}: ${response ? response.error : t('unknownError')}`);
+                resolve(false);
+                return;
+            }
+            loadTree().then(() => resolve(true));
+        });
     });
 }
 
@@ -374,11 +453,14 @@ function createNodeElement(node) {
     const isExpanded = expandedNodes.has(node.id);
     const displayLabel = node.label || '';
     const displayTitle = node.title || t('untitled');
+    const isNaming = node.namingStatus === 'pending';
     const timeAgo = getTimeAgo(node.createdAt);
 
     // Node row
     const row = document.createElement('div');
     row.className = 'node-row' + (node.status === 'live' && node.tabId === activeTabId ? ' active' : '');
+    row.dataset.nodeId = node.id;
+    row.draggable = true;
 
     // Toggle arrow
     const toggle = document.createElement('span');
@@ -404,6 +486,11 @@ function createNodeElement(node) {
         label.innerHTML = `<span class="page-title">${escapeHtml(truncate(displayTitle, 50))}</span>`;
     }
 
+    const namingStatus = document.createElement('span');
+    namingStatus.className = 'node-naming-status';
+    namingStatus.textContent = t('namingInProgress');
+    namingStatus.style.display = isNaming ? '' : 'none';
+
     // Time
     const time = document.createElement('span');
     time.className = 'node-time';
@@ -412,6 +499,7 @@ function createNodeElement(node) {
     row.appendChild(toggle);
     row.appendChild(status);
     row.appendChild(label);
+    row.appendChild(namingStatus);
     row.appendChild(time);
 
     // Click handler — switch to tab or show snapshot
@@ -427,6 +515,39 @@ function createNodeElement(node) {
     row.addEventListener('contextmenu', (e) => {
         e.preventDefault();
         showContextMenu(e, node);
+    });
+
+    row.addEventListener('dragstart', (e) => {
+        draggingNodeId = node.id;
+        currentDropTargetNodeId = null;
+        row.classList.add('dragging');
+        if (e.dataTransfer) {
+            e.dataTransfer.effectAllowed = 'move';
+            e.dataTransfer.setData('text/plain', node.id);
+        }
+    });
+
+    row.addEventListener('dragend', () => {
+        clearDragDropState();
+    });
+
+    row.addEventListener('dragover', (e) => {
+        if (!draggingNodeId || draggingNodeId === node.id) return;
+        if (!canMoveNode(draggingNodeId, node.id)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+        setNodeDropTarget(node.id);
+    });
+
+    row.addEventListener('drop', async (e) => {
+        if (!draggingNodeId) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const sourceId = draggingNodeId;
+        clearDragDropState();
+        if (!canMoveNode(sourceId, node.id)) return;
+        await moveNode(sourceId, node.id);
     });
 
     div.appendChild(row);
@@ -893,6 +1014,35 @@ function setupEventListeners() {
         // Always send a response to prevent "message port closed" error
         sendResponse({ received: true });
         return false;
+    });
+
+    treeContainer.addEventListener('dragover', (e) => {
+        if (!draggingNodeId) return;
+        const targetEl = e.target instanceof Element ? e.target : null;
+        // Node-level drop takes precedence; root target is for container background.
+        if (targetEl && targetEl.closest('.node-row')) return;
+        if (!canMoveNode(draggingNodeId, null)) return;
+        e.preventDefault();
+        if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+        setRootDropTarget();
+    });
+
+    treeContainer.addEventListener('dragleave', (e) => {
+        if (!draggingNodeId) return;
+        const relatedTarget = e.relatedTarget;
+        if (relatedTarget && treeContainer.contains(relatedTarget)) return;
+        clearDropTargetHighlight();
+    });
+
+    treeContainer.addEventListener('drop', async (e) => {
+        if (!draggingNodeId) return;
+        const targetEl = e.target instanceof Element ? e.target : null;
+        if (targetEl && targetEl.closest('.node-row')) return;
+        e.preventDefault();
+        const sourceId = draggingNodeId;
+        clearDragDropState();
+        if (!canMoveNode(sourceId, null)) return;
+        await moveNode(sourceId, null);
     });
 }
 

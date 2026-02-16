@@ -28,10 +28,16 @@ const SILICONFLOW_MODELS = [
 ];
 const modelCooldowns = new Map(); // modelId → timestamp when cooldown expires
 const MODEL_COOLDOWN_MS = 60_000; // 60 seconds
+const AI_NAMING_TIMEOUT_MS = 8_000; // 8 seconds timeout, then local fallback
+const AUTO_NAME_MIN_INCREMENTAL_TEXT = 12;
+const AUTO_NAME_MIN_FULL_TEXT = 80;
 
 // ── Tracked state (in-memory mirror, persisted to IndexedDB) ──
 // Map of tabId -> nodeId for quick lookup
 const tabToNode = new Map();
+const tabCreationMeta = new Map(); // tabId -> { initialWasBlank: boolean }
+const tabTrackingLocks = new Set(); // tabIds currently being auto-tracked
+const namingInFlight = new Map(); // nodeId -> Promise<string>
 
 // Generate unique IDs
 function generateId() {
@@ -100,6 +106,7 @@ async function createRootNode(tab) {
 
     // Notify side panel to refresh
     broadcastToSidePanel({ type: 'TREE_UPDATED' });
+    scheduleInitialAutoNaming(nodeId);
 
     console.log('[AI Tree] Root node created:', nodeId, 'for tab', tab.id);
     return node;
@@ -140,44 +147,172 @@ async function createChildNode(tab, parentTabId) {
     }
 
     broadcastToSidePanel({ type: 'TREE_UPDATED' });
+    scheduleInitialAutoNaming(nodeId);
     console.log('[AI Tree] Child node created:', nodeId, 'parent:', parentNodeId);
     return node;
+}
+
+function scheduleInitialAutoNaming(nodeId) {
+    // First attempt quickly, second attempt as a reliability fallback.
+    const delays = [1200, 5000];
+    delays.forEach((delayMs) => {
+        setTimeout(() => {
+            triggerAutoNaming(nodeId, { force: true, source: 'track_initial' }).catch((e) => {
+                console.warn('[AI Tree] Initial auto-naming failed:', e.message);
+            });
+        }, delayMs);
+    });
+}
+
+function normalizeComparableUrl(rawUrl) {
+    if (!rawUrl || typeof rawUrl !== 'string') return '';
+    try {
+        const url = new URL(rawUrl);
+        // Hash is often UI state and should not affect same-conversation matching.
+        url.hash = '';
+        return url.toString();
+    } catch {
+        return rawUrl;
+    }
+}
+
+function shouldSkipAutoTrackUrl(rawUrl) {
+    if (!rawUrl) return true;
+    return (
+        rawUrl === 'about:blank' ||
+        rawUrl === 'chrome://newtab/' ||
+        rawUrl.startsWith('chrome://') ||
+        rawUrl.startsWith('chrome-extension://') ||
+        rawUrl.startsWith('edge://') ||
+        rawUrl.startsWith('devtools://')
+    );
+}
+
+function isBlankLikeUrl(rawUrl) {
+    if (!rawUrl) return true;
+    return rawUrl === 'about:blank' || rawUrl === 'chrome://newtab/';
+}
+
+function tryAcquireAutoTrackLock(tabId) {
+    if (!tabId) return false;
+    if (tabTrackingLocks.has(tabId)) return false;
+    tabTrackingLocks.add(tabId);
+    return true;
+}
+
+function releaseAutoTrackLock(tabId) {
+    if (!tabId) return;
+    tabTrackingLocks.delete(tabId);
+}
+
+/**
+ * Duplicate tabs should become child nodes.
+ * Manual URL copy/paste usually starts from a blank new tab and should be root.
+ */
+async function maybeTrackDuplicateFromNavigation(tab, rawUrl) {
+    if (!tab || !tab.id || tabToNode.has(tab.id)) return false;
+    if (!tab.openerTabId || !tabToNode.has(tab.openerTabId)) return false;
+
+    const meta = tabCreationMeta.get(tab.id);
+    if (!meta || meta.initialWasBlank) return false;
+
+    const normalizedUrl = normalizeComparableUrl(rawUrl || tab.url || tab.pendingUrl || '');
+    if (!normalizedUrl || shouldSkipAutoTrackUrl(normalizedUrl)) return false;
+
+    let openerUrl = '';
+    try {
+        const openerTab = await chrome.tabs.get(tab.openerTabId);
+        openerUrl = normalizeComparableUrl(openerTab.url || openerTab.pendingUrl || '');
+    } catch {
+        return false;
+    }
+
+    if (!openerUrl || normalizedUrl !== openerUrl) return false;
+    if (!tryAcquireAutoTrackLock(tab.id)) return false;
+
+    try {
+        const childTab = { ...tab, url: rawUrl || tab.url || '' };
+        await createChildNode(childTab, tab.openerTabId);
+        tabCreationMeta.delete(tab.id);
+        return true;
+    } finally {
+        releaseAutoTrackLock(tab.id);
+    }
+}
+
+/**
+ * For manually opened tabs with the same URL as tracked conversations:
+ * create a new root node (no parent inference to avoid mis-attachment).
+ */
+async function maybeCreateRootNodeFromTrackedUrl(tab, rawUrl) {
+    if (!tab || !tab.id || tabToNode.has(tab.id)) return false;
+    if (!tryAcquireAutoTrackLock(tab.id)) return false;
+
+    try {
+        const normalizedUrl = normalizeComparableUrl(rawUrl || tab.url || tab.pendingUrl || '');
+        if (!normalizedUrl || shouldSkipAutoTrackUrl(normalizedUrl)) return false;
+
+        const nodes = await TreeStorage.getAllNodes();
+        const hasTrackedMatch = nodes.some((node) => normalizeComparableUrl(node.url || '') === normalizedUrl);
+        if (!hasTrackedMatch) return false;
+
+        const rootTab = { ...tab, url: rawUrl || tab.url || '' };
+        await createRootNode(rootTab);
+        tabCreationMeta.delete(tab.id);
+        console.log('[AI Tree] Same-URL manual tab tracked as root:', tab.id);
+        return true;
+    } finally {
+        releaseAutoTrackLock(tab.id);
+    }
 }
 
 // ── Tab event listeners ──
 
 // Detect tab duplication (only true duplicates, not just any new tab)
 chrome.tabs.onCreated.addListener(async (tab) => {
-    // Only consider tabs opened from a tracked tab
-    if (tab.openerTabId && tabToNode.has(tab.openerTabId)) {
-        // Wait for tab to fully initialize (Gemini and complex SPA pages can be slow)
-        setTimeout(async () => {
-            try {
-                // Double-check we haven't already tracked this tab
-                if (tabToNode.has(tab.id)) return;
+    const initialUrl = tab.url || tab.pendingUrl || '';
+    tabCreationMeta.set(tab.id, { initialWasBlank: isBlankLikeUrl(initialUrl) || shouldSkipAutoTrackUrl(initialUrl) });
 
-                const updatedTab = await chrome.tabs.get(tab.id);
-                const parentTab = await chrome.tabs.get(tab.openerTabId);
+    // Duplicate detection pass (non-blank opener clone only)
+    setTimeout(async () => {
+        try {
+            if (tabToNode.has(tab.id)) return;
+            const updatedTab = await chrome.tabs.get(tab.id);
+            const newUrl = updatedTab.url || updatedTab.pendingUrl || '';
+            await maybeTrackDuplicateFromNavigation(updatedTab, newUrl);
+        } catch {
+            // Tab may be closed quickly.
+        }
+    }, 900);
 
-                // Only create child if this is a true duplication (same URL)
-                // Skip new tabs, blank pages, and navigation to different sites
-                const newUrl = updatedTab.url || updatedTab.pendingUrl || '';
-                const parentUrl = parentTab.url || '';
-                if (!newUrl || !parentUrl) return;
-                if (newUrl === 'chrome://newtab/' || newUrl === 'about:blank') return;
-                if (newUrl !== parentUrl) return;
-
-                await createChildNode(updatedTab, tab.openerTabId);
-            } catch {
-                // Tab may have been closed already
-            }
-        }, 1500);
-    }
+    // Manual open flow: same-URL tabs become root nodes.
+    setTimeout(async () => {
+        try {
+            if (tabToNode.has(tab.id)) return;
+            const updatedTab = await chrome.tabs.get(tab.id);
+            const newUrl = updatedTab.url || updatedTab.pendingUrl || tab.url || tab.pendingUrl || '';
+            await maybeCreateRootNodeFromTrackedUrl(updatedTab, newUrl);
+        } catch {
+            // Tab may be closed quickly.
+        }
+    }, 1800);
 });
 
 // Update node title/URL when tab navigates
 chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
-    if (!tabToNode.has(tabId)) return;
+    if (!tabToNode.has(tabId)) {
+        if (changeInfo.url) {
+            try {
+                const trackedAsDuplicate = await maybeTrackDuplicateFromNavigation(tab, changeInfo.url);
+                if (!trackedAsDuplicate) {
+                    await maybeCreateRootNodeFromTrackedUrl(tab, changeInfo.url);
+                }
+            } catch (e) {
+                console.error('[AI Tree] Failed to auto-track tab from URL update:', e);
+            }
+        }
+        return;
+    }
 
     const nodeId = tabToNode.get(tabId);
     const node = await TreeStorage.getNode(nodeId);
@@ -217,6 +352,8 @@ chrome.tabs.onActivated.addListener((activeInfo) => {
 
 // Handle tab close
 chrome.tabs.onRemoved.addListener(async (tabId) => {
+    tabCreationMeta.delete(tabId);
+    releaseAutoTrackLock(tabId);
     if (!tabToNode.has(tabId)) return;
 
     const nodeId = tabToNode.get(tabId);
@@ -293,79 +430,27 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
 
     if (message.type === 'AUTO_NAME_NODE') {
-        (async () => {
-            try {
-                const node = await TreeStorage.getNode(message.nodeId);
-                if (!node) { sendResponse({ success: false, error: 'Node not found' }); return; }
-
-                let text = '';
-
-                // For live tabs: capture fresh content directly from the page
-                if (node.status === 'live' && node.tabId) {
-                    try {
-                        const response = await chrome.tabs.sendMessage(node.tabId, { type: 'GET_CONTENT' });
-                        if (response && response.text) {
-                            text = response.text;
-                            // Also save as the latest snapshot
-                            await handleSnapshotData(node.tabId, response, 'auto_name');
-                        }
-                    } catch (e) {
-                        console.log('[AI Tree] Could not get live content, using stored snapshot');
-                    }
-                }
-
-                // Fallback: use stored snapshot (for dead nodes or if live capture failed)
-                if (!text) {
-                    const snapshot = await TreeStorage.getSnapshot(message.nodeId);
-                    text = snapshot ? snapshot.text : '';
-                }
-
-                if (!text) { sendResponse({ success: false, error: 'No content available' }); return; }
-
-                const settings = await chrome.storage.local.get(['aiNamingType', 'aiApiUrl', 'aiApiKey', 'aiModel']);
-                const namingType = settings.aiNamingType || 'builtin';
-                const apiContext = text.slice(-5000);
-                let newLabel = '';
-
-                if (namingType === 'builtin') {
-                    try {
-                        newLabel = await generateTitleWithFallback(apiContext, null, BUILTIN_API_URL);
-                    } catch (e) {
-                        newLabel = extractAutoLabel(text);
-                    }
-                } else if (namingType === 'custom' && settings.aiApiKey) {
-                    try {
-                        const baseUrl = settings.aiApiUrl || 'https://api.openai.com/v1';
-                        newLabel = await generateTitleFromOpenAICompatible(
-                            apiContext, settings.aiApiKey, settings.aiModel, baseUrl
-                        );
-                    } catch (e) {
-                        newLabel = extractAutoLabel(text);
-                    }
-                } else {
-                    newLabel = extractAutoLabel(text);
-                }
-
-                if (newLabel) {
-                    // Re-read node in case it was updated by handleSnapshotData
-                    const freshNode = await TreeStorage.getNode(message.nodeId);
-                    if (freshNode) {
-                        freshNode.autoLabel = newLabel;
-                        freshNode.label = '';
-                        await TreeStorage.saveNode(freshNode);
-                        broadcastToSidePanel({ type: 'TREE_UPDATED' });
-                    }
-                }
-                sendResponse({ success: true, label: newLabel });
-            } catch (e) {
+        triggerAutoNaming(message.nodeId, { force: true, source: 'manual_auto_name' })
+            .then((label) => {
+                sendResponse({ success: true, label: label || '' });
+            })
+            .catch((e) => {
                 sendResponse({ success: false, error: e.message });
-            }
-        })();
+            });
         return true;
     }
 
     if (message.type === 'DELETE_NODE') {
         handleDeleteNode(message.nodeId, message.withChildren || false).then(() => {
+            sendResponse({ success: true });
+        }).catch((e) => {
+            sendResponse({ success: false, error: e.message });
+        });
+        return true;
+    }
+
+    if (message.type === 'MOVE_NODE') {
+        handleMoveNode(message.nodeId, message.newParentId || null).then(() => {
             sendResponse({ success: true });
         }).catch((e) => {
             sendResponse({ success: false, error: e.message });
@@ -408,6 +493,229 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 // ── Handlers ──
 
+function withTimeout(promise, timeoutMs, timeoutMessage) {
+    return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+            reject(new Error(timeoutMessage || 'Operation timed out'));
+        }, timeoutMs);
+
+        promise
+            .then((result) => {
+                clearTimeout(timer);
+                resolve(result);
+            })
+            .catch((error) => {
+                clearTimeout(timer);
+                reject(error);
+            });
+    });
+}
+
+function sanitizeGeneratedLabel(label) {
+    if (!label) return '';
+    return label
+        .replace(/\s+/g, ' ')
+        .trim()
+        .replace(/^["']|["']$/g, '')
+        .slice(0, 60);
+}
+
+function deriveLocalAutoLabel(incrementalText, fullText, fallbackTitle) {
+    let candidate = '';
+    if (incrementalText && incrementalText.trim().length > 0) {
+        candidate = extractLabelFromNewText(incrementalText);
+    }
+    if (!candidate && fullText && fullText.trim().length > 0) {
+        candidate = extractAutoLabel(fullText);
+    }
+    if (!candidate && fallbackTitle) {
+        candidate = fallbackTitle.trim().slice(0, 40);
+    }
+    return sanitizeGeneratedLabel(candidate);
+}
+
+async function saveLiveSnapshotFromContent(node, content, reason) {
+    if (!node || !content) return;
+    const snapshot = {
+        nodeId: node.id,
+        html: content.html || '',
+        styles: content.styles || '',
+        text: content.text || '',
+        title: content.title || node.title || '',
+        url: content.url || node.url || '',
+        capturedAt: content.capturedAt || Date.now(),
+        reason: reason || 'auto_name',
+    };
+    await TreeStorage.saveSnapshot(snapshot);
+}
+
+async function collectNamingText(node, options = {}) {
+    let fullText = (options.fullText || '').trim();
+    const incrementalText = (options.incrementalText || '').trim();
+
+    if (!fullText && node.status === 'live' && node.tabId) {
+        try {
+            const response = await chrome.tabs.sendMessage(node.tabId, { type: 'GET_CONTENT' });
+            if (response && response.text) {
+                fullText = (response.text || '').trim();
+                // Keep snapshot freshness without waiting for the regular periodic capture.
+                await saveLiveSnapshotFromContent(node, response, options.snapshotReason || 'auto_name');
+            }
+        } catch {
+            // Content script may not be ready yet.
+        }
+    }
+
+    if (!fullText) {
+        try {
+            const snapshot = await TreeStorage.getSnapshot(node.id);
+            fullText = snapshot && snapshot.text ? snapshot.text.trim() : '';
+        } catch {
+            fullText = '';
+        }
+    }
+
+    if (!fullText && incrementalText) {
+        fullText = incrementalText;
+    }
+
+    return { fullText, incrementalText };
+}
+
+async function setNodeNamingStatus(nodeId, status) {
+    const node = await TreeStorage.getNode(nodeId);
+    if (!node) return false;
+
+    let changed = false;
+    if (status === 'pending') {
+        if (node.namingStatus !== 'pending') {
+            node.namingStatus = 'pending';
+            changed = true;
+        }
+    } else {
+        if (node.namingStatus) {
+            delete node.namingStatus;
+            changed = true;
+        }
+    }
+
+    if (changed) {
+        await TreeStorage.saveNode(node);
+        broadcastToSidePanel({ type: 'TREE_UPDATED' });
+    }
+    return changed;
+}
+
+async function runAutoNaming(nodeId, options = {}) {
+    const node = await TreeStorage.getNode(nodeId);
+    if (!node) throw new Error('Node not found');
+
+    await setNodeNamingStatus(nodeId, 'pending');
+
+    try {
+        const { fullText, incrementalText } = await collectNamingText(node, options);
+        const shouldUseIncremental = incrementalText.length >= AUTO_NAME_MIN_INCREMENTAL_TEXT;
+        const needsInitialNaming = !node.autoLabel && fullText.length >= AUTO_NAME_MIN_FULL_TEXT;
+
+        if (!options.force && !shouldUseIncremental && !needsInitialNaming) {
+            return '';
+        }
+
+        if (!fullText) {
+            return '';
+        }
+
+        const settings = await chrome.storage.local.get(['aiNamingType', 'aiApiUrl', 'aiApiKey', 'aiModel']);
+        const namingType = settings.aiNamingType || 'builtin';
+
+        const promptText = shouldUseIncremental
+            ? `${fullText}\n${incrementalText}`.slice(-5000)
+            : fullText.slice(-5000);
+
+        let label = '';
+
+        if (namingType === 'builtin') {
+            try {
+                label = await withTimeout(
+                    generateTitleWithFallback(promptText, null, BUILTIN_API_URL),
+                    AI_NAMING_TIMEOUT_MS,
+                    'Built-in AI naming timeout'
+                );
+            } catch (e) {
+                console.warn('[AI Tree] Built-in AI naming failed, using local fallback:', e.message);
+            }
+        } else if (namingType === 'custom' && settings.aiApiKey) {
+            try {
+                const baseUrl = settings.aiApiUrl || 'https://api.openai.com/v1';
+                label = await withTimeout(
+                    generateTitleFromOpenAICompatible(promptText, settings.aiApiKey, settings.aiModel, baseUrl),
+                    AI_NAMING_TIMEOUT_MS,
+                    'Custom AI naming timeout'
+                );
+            } catch (e) {
+                console.warn('[AI Tree] Custom AI naming failed, using local fallback:', e.message);
+            }
+        }
+
+        label = sanitizeGeneratedLabel(label);
+        if (!label) {
+            label = deriveLocalAutoLabel(incrementalText, fullText, node.title || '');
+        }
+
+        if (!label) {
+            return '';
+        }
+
+        const latestNode = await TreeStorage.getNode(nodeId);
+        if (!latestNode) {
+            return '';
+        }
+
+        let changed = false;
+        if (latestNode.autoLabel !== label) {
+            latestNode.autoLabel = label;
+            changed = true;
+        }
+        // Product decision: AI auto-name can overwrite manual label.
+        if (latestNode.label) {
+            latestNode.label = '';
+            changed = true;
+        }
+        if (latestNode.namingStatus) {
+            delete latestNode.namingStatus;
+            changed = true;
+        }
+
+        if (changed) {
+            await TreeStorage.saveNode(latestNode);
+            broadcastToSidePanel({ type: 'TREE_UPDATED' });
+        }
+
+        return label;
+    } finally {
+        await setNodeNamingStatus(nodeId, null);
+    }
+}
+
+function triggerAutoNaming(nodeId, options = {}) {
+    if (!nodeId) return Promise.resolve('');
+    if (namingInFlight.has(nodeId)) {
+        return namingInFlight.get(nodeId);
+    }
+
+    const task = runAutoNaming(nodeId, options)
+        .catch((e) => {
+            console.warn('[AI Tree] Auto-naming failed for node', nodeId, e.message);
+            return '';
+        })
+        .finally(() => {
+            namingInFlight.delete(nodeId);
+        });
+
+    namingInFlight.set(nodeId, task);
+    return task;
+}
+
 async function handleSnapshotData(tabId, data, reason) {
     const nodeId = tabToNode.get(tabId);
     if (!nodeId) return;
@@ -417,7 +725,9 @@ async function handleSnapshotData(tabId, data, reason) {
     try {
         const prevSnapshot = await TreeStorage.getSnapshot(nodeId);
         if (prevSnapshot) previousText = prevSnapshot.text;
-    } catch { /* no previous snapshot */ }
+    } catch {
+        // No previous snapshot.
+    }
 
     const snapshot = {
         nodeId: nodeId,
@@ -432,87 +742,58 @@ async function handleSnapshotData(tabId, data, reason) {
 
     await TreeStorage.saveSnapshot(snapshot);
 
-    // Auto-naming: skip if user set a manual label
     const node = await TreeStorage.getNode(nodeId);
-    if (node && !node.label) {
-        let newAutoLabel = '';
+    if (!node) {
+        return;
+    }
 
-        // Prioritize explicit new content detected by MutationObserver
-        if (data.recentlyAdded) {
-            const settings = await chrome.storage.local.get(['aiNamingType', 'aiApiUrl', 'aiApiKey', 'aiModel']);
-            const namingType = settings.aiNamingType || 'builtin';
+    // Prefer explicit mutation text; fallback to snapshot text diff so labels
+    // can still update when a site's DOM updates are hard to observe.
+    const inferredAdded = extractIncrementalText(previousText || '', data.text || '');
+    const newlyAddedText = [data.recentlyAdded || '', inferredAdded]
+        .map((text) => text.trim())
+        .filter((text) => text.length > 0)
+        .join('\n');
 
-            // Use last 5000 chars of page text + recentlyAdded to ensure full context
-            const fullContext = (data.text || '') + '\n' + (data.recentlyAdded || '');
-            const apiContext = fullContext.slice(-5000);
+    const hasMeaningfulDelta = newlyAddedText.length >= AUTO_NAME_MIN_INCREMENTAL_TEXT;
+    const hasInitialText = (data.text || '').trim().length >= AUTO_NAME_MIN_FULL_TEXT;
+    const shouldTrigger = hasMeaningfulDelta || (!node.autoLabel && hasInitialText) || reason === 'initial';
 
-            if (namingType === 'builtin') {
-                // Built-in: use Cloudflare Worker proxy with model rotation
-                try {
-                    newAutoLabel = await generateTitleWithFallback(apiContext, null, BUILTIN_API_URL);
-                } catch (e) {
-                    console.error('[AI Tree] Built-in AI naming failed, falling back to local:', e);
-                    newAutoLabel = extractLabelFromNewText(data.recentlyAdded);
-                }
-            } else if (namingType === 'custom' && settings.aiApiKey) {
-                // Custom API: user-provided URL/key/model
-                try {
-                    const baseUrl = settings.aiApiUrl || 'https://api.openai.com/v1';
-                    newAutoLabel = await generateTitleFromOpenAICompatible(
-                        apiContext, settings.aiApiKey, settings.aiModel, baseUrl
-                    );
-                } catch (e) {
-                    console.error('[AI Tree] Custom API naming failed, falling back to local:', e);
-                    newAutoLabel = extractLabelFromNewText(data.recentlyAdded);
-                }
-            } else {
-                // Local algorithm
-                newAutoLabel = extractLabelFromNewText(data.recentlyAdded);
-            }
-        }
-
-        // Fallback: if we simply have no auto-label yet (e.g. first load), use AI on page text
-        if (!newAutoLabel && !node.autoLabel && data.text && data.text.length > 50) {
-            console.log('[AI Tree] Initial naming triggered, text length:', data.text.length);
-            const settings = await chrome.storage.local.get(['aiNamingType', 'aiApiUrl', 'aiApiKey', 'aiModel']);
-            const namingType = settings.aiNamingType || 'builtin';
-            const apiContext = data.text.slice(-5000);
-
-            if (namingType === 'builtin') {
-                try {
-                    newAutoLabel = await generateTitleWithFallback(apiContext, null, BUILTIN_API_URL);
-                    console.log('[AI Tree] Initial AI naming result:', newAutoLabel);
-                } catch (e) {
-                    console.error('[AI Tree] Initial AI naming failed:', e);
-                    newAutoLabel = extractAutoLabel(data.text);
-                }
-            } else if (namingType === 'custom' && settings.aiApiKey) {
-                try {
-                    const baseUrl = settings.aiApiUrl || 'https://api.openai.com/v1';
-                    newAutoLabel = await generateTitleFromOpenAICompatible(
-                        apiContext, settings.aiApiKey, settings.aiModel, baseUrl
-                    );
-                    console.log('[AI Tree] Initial AI naming result:', newAutoLabel);
-                } catch (e) {
-                    console.error('[AI Tree] Initial AI naming failed:', e);
-                    newAutoLabel = extractAutoLabel(data.text);
-                }
-            } else {
-                newAutoLabel = extractAutoLabel(data.text);
-            }
-        } else if (!newAutoLabel && !node.autoLabel) {
-            console.log('[AI Tree] Skipped initial naming: text length=', data.text ? data.text.length : 0);
-        }
-
-        // Only update if we found a meaningful new label
-        if (newAutoLabel && newAutoLabel !== node.autoLabel) {
-            node.autoLabel = newAutoLabel;
-            await TreeStorage.saveNode(node);
-            broadcastToSidePanel({ type: 'TREE_UPDATED' });
-        }
+    if (shouldTrigger) {
+        triggerAutoNaming(nodeId, {
+            force: reason === 'initial',
+            fullText: data.text || '',
+            incrementalText: newlyAddedText,
+            source: `snapshot:${reason}`,
+        }).catch(() => {
+            // Errors are logged inside triggerAutoNaming.
+        });
     }
 
     console.log('[AI Tree] Snapshot saved for node', nodeId, 'reason:', reason);
+}
+
+function extractIncrementalText(previousText, currentText) {
+    if (!previousText || !currentText) return '';
+    if (previousText === currentText) return '';
+
+    // Most common case: content is appended.
+    if (currentText.startsWith(previousText)) {
+        return currentText.slice(previousText.length).trim();
+    }
+
+    // Fallback: find overlapping suffix from previous text in current text.
+    const maxWindow = Math.min(300, previousText.length);
+    for (let size = maxWindow; size >= 40; size -= 20) {
+        const suffix = previousText.slice(-size);
+        const idx = currentText.lastIndexOf(suffix);
+        if (idx !== -1) {
+            const tail = currentText.slice(idx + suffix.length).trim();
+            if (tail) return tail;
+        }
+    }
+
+    return '';
 }
 
 /**
@@ -622,7 +903,8 @@ async function handleStartTracking(tabId) {
             // Clean up the auto-created child node
             await TreeStorage.deleteNode(existingNodeId);
         } else {
-            // Already a root node, nothing to do
+            // Already a root node: refresh naming immediately.
+            triggerAutoNaming(existingNodeId, { force: true, source: 'track_existing_root' }).catch(() => { });
             return;
         }
     }
@@ -660,6 +942,7 @@ async function handleDeleteNode(nodeId, withChildren) {
 
         for (const id of toDelete) {
             const node = allNodes.find(n => n.id === id);
+            namingInFlight.delete(id);
             if (node && node.status === 'live') {
                 tabToNode.delete(node.tabId);
                 try { await chrome.tabs.remove(node.tabId); } catch { /* tab may not exist */ }
@@ -682,10 +965,58 @@ async function handleDeleteNode(nodeId, withChildren) {
             try { await chrome.tabs.remove(targetNode.tabId); } catch { /* tab may not exist */ }
         }
 
+        namingInFlight.delete(nodeId);
         await TreeStorage.deleteNode(nodeId);
         await TreeStorage.deleteSnapshot(nodeId);
     }
 
+    broadcastToSidePanel({ type: 'TREE_UPDATED' });
+}
+
+function collectDescendantIds(rootId, nodes) {
+    const descendants = new Set();
+    const queue = [rootId];
+    while (queue.length > 0) {
+        const current = queue.shift();
+        for (const node of nodes) {
+            if (node.parentId === current && !descendants.has(node.id)) {
+                descendants.add(node.id);
+                queue.push(node.id);
+            }
+        }
+    }
+    return descendants;
+}
+
+async function handleMoveNode(nodeId, newParentId) {
+    const allNodes = await TreeStorage.getAllNodes();
+    const movingNode = allNodes.find((node) => node.id === nodeId);
+    if (!movingNode) {
+        throw new Error('Node not found');
+    }
+
+    if (newParentId === nodeId) {
+        throw new Error('Cannot move a node under itself');
+    }
+
+    if (newParentId) {
+        const parentNode = allNodes.find((node) => node.id === newParentId);
+        if (!parentNode) {
+            throw new Error('Target parent not found');
+        }
+        const descendants = collectDescendantIds(nodeId, allNodes);
+        if (descendants.has(newParentId)) {
+            throw new Error('Cannot move a node under its descendant');
+        }
+    }
+
+    const normalizedParentId = newParentId || null;
+    if (movingNode.parentId === normalizedParentId) {
+        return;
+    }
+
+    movingNode.parentId = normalizedParentId;
+    await TreeStorage.saveNode(movingNode);
     broadcastToSidePanel({ type: 'TREE_UPDATED' });
 }
 
