@@ -4,7 +4,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>AI Conversation Tree</title>
+  <title>AI Chat Branch</title>
   <link rel="stylesheet" href="sidepanel.css">
 </head>
 
@@ -16,7 +16,7 @@
         <svg class="header-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <path d="M12 3v18M12 3l-4 4M12 3l4 4M5 12h14M5 12l4-4M5 12l4 4" />
         </svg>
-        <h1>Conversation Tree</h1>
+        <h1 id="app-title">AI Chat Branch</h1>
       </div>
       <div class="header-actions">
         <button id="btn-settings" class="btn btn-ghost" title="Settings">
@@ -30,7 +30,7 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
             <path d="M12 5v14M5 12h14" />
           </svg>
-          Track Tab
+          <span id="label-track-tab">Track Tab</span>
         </button>
       </div>
     </header>
@@ -38,9 +38,8 @@
     <!-- Empty state -->
     <div id="empty-state" class="empty-state">
       <div class="empty-icon">🌳</div>
-      <p>No tabs being tracked yet.</p>
-      <p class="empty-hint">Click <strong>"Track Tab"</strong> to start tracking the current tab, then duplicate it to
-        create branches.</p>
+      <p id="empty-title">No tabs being tracked yet.</p>
+      <p id="empty-hint" class="empty-hint">Click "Track Tab" to start tracking the current tab, then duplicate it to create branches.</p>
     </div>
 
     <!-- Tree container -->
@@ -61,8 +60,8 @@
         </button>
       </div>
       <div class="snapshot-tabs">
-        <button class="snapshot-tab active" data-view="html">Visual</button>
-        <button class="snapshot-tab" data-view="text">Text</button>
+        <button id="snapshot-tab-html" class="snapshot-tab active" data-view="html">Visual</button>
+        <button id="snapshot-tab-text" class="snapshot-tab" data-view="text">Text</button>
       </div>
       <div id="snapshot-content" class="snapshot-content">
       </div>
@@ -76,8 +75,8 @@
         <div id="settings-main" class="settings-view">
           <div class="modal-header">
             <div style="width: 32px;"></div>
-            <h2>设置</h2>
-            <button id="btn-close-settings" class="btn btn-ghost" title="关闭">
+            <h2 id="settings-main-title">Settings</h2>
+            <button id="btn-close-settings" class="btn btn-ghost" title="Close">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20">
                 <path d="M18 6L6 18M6 6l12 12" />
               </svg>
@@ -89,7 +88,7 @@
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" width="18" height="18">
                   <path d="M12 20h9M16.5 3.5a2.121 2.121 0 1 1 3 3L7 19l-4 1 1-4L16.5 3.5z" />
                 </svg>
-                <span>节点自动命名设置</span>
+                <span id="menu-naming">Auto Naming Method</span>
               </div>
               <svg class="menu-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
                 width="16" height="16">
@@ -103,7 +102,19 @@
                   <path
                     d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42" />
                 </svg>
-                <span>界面外观</span>
+                <span id="menu-appearance">Appearance</span>
+              </div>
+              <svg class="menu-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                width="16" height="16">
+                <path d="M9 18l6-6-6-6" />
+              </svg>
+            </div>
+            <div class="settings-menu-item" data-target="settings-language">
+              <div class="menu-item-left">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" width="18" height="18">
+                  <path d="M5 8h14M5 16h14M9 4l-4 8 4 8M15 4l4 8-4 8" />
+                </svg>
+                <span id="menu-language">Language</span>
               </div>
               <svg class="menu-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
                 width="16" height="16">
@@ -116,40 +127,40 @@
         <!-- View 2: Auto-naming Settings -->
         <div id="settings-naming" class="settings-view" style="display:none;">
           <div class="modal-header">
-            <button class="btn btn-ghost settings-back" title="返回设置">
+            <button class="btn btn-ghost settings-back" title="Back to settings">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
                 <path d="M19 12H5M5 12l7 7M5 12l7-7" />
               </svg>
             </button>
-            <h2>节点自动命名设置</h2>
-            <button class="btn btn-ghost btn-close-settings" title="关闭">
+            <h2 id="settings-naming-title">Auto Naming Method</h2>
+            <button class="btn btn-ghost btn-close-settings" title="Close">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
                 <path d="M18 6L6 18M6 6l12 12" />
               </svg>
             </button>
           </div>
           <div class="settings-body">
-            <p class="settings-desc">自动分析对话内容，为每个节点生成简短标题。</p>
+            <p id="naming-desc" class="settings-desc">Analyze the conversation automatically and generate concise labels for nodes.</p>
             <div class="form-group">
-              <label for="setting-naming-type">命名方式</label>
+              <label id="naming-type-label" for="setting-naming-type">Naming Method</label>
               <select id="setting-naming-type" class="form-control">
-                <option value="builtin">AI 自动命名 (免费)</option>
-                <option value="custom">AI 自动命名 (自定义)</option>
-                <option value="local">本地算法</option>
+                <option value="builtin">Built-in AI</option>
+                <option value="custom">Custom API</option>
+                <option value="local">Local Algorithm</option>
               </select>
             </div>
 
             <div id="setting-builtin-hint" class="form-hint" style="margin: 8px 0 0;">
-              使用内置 AI 服务自动命名，无需任何配置。
+              Use the built-in AI naming service with zero configuration.
             </div>
 
             <div id="setting-local-hint" class="form-hint hidden" style="margin: 8px 0 0;">
-              使用本地文本分析算法，无需联网，但准确度较低。
+              Use local text analysis with no network request. Naming quality may be lower.
             </div>
 
             <button id="btn-config-custom" class="btn btn-secondary btn-full hidden"
               style="margin-top: 12px; justify-content: space-between;">
-              <span>配置 API (Configure)</span>
+              <span id="btn-config-custom-text">Configure API</span>
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
                 <path d="M9 18l6-6-6-6" />
               </svg>
@@ -157,20 +168,20 @@
 
 
 
-            <button id="btn-save-naming" class="btn btn-primary btn-full" style="margin-top: 16px;">保存 (Save)</button>
+            <button id="btn-save-naming" class="btn btn-primary btn-full" style="margin-top: 16px;">Save</button>
           </div>
         </div>
 
         <!-- View 3: Appearance Settings -->
         <div id="settings-appearance" class="settings-view" style="display:none;">
           <div class="modal-header">
-            <button class="btn btn-ghost settings-back" title="返回设置">
+            <button class="btn btn-ghost settings-back" title="Back to settings">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
                 <path d="M19 12H5M5 12l7 7M5 12l7-7" />
               </svg>
             </button>
-            <h2>界面外观</h2>
-            <button class="btn btn-ghost btn-close-settings" title="关闭">
+            <h2 id="settings-appearance-title">Appearance</h2>
+            <button class="btn btn-ghost btn-close-settings" title="Close">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
                 <path d="M18 6L6 18M6 6l12 12" />
               </svg>
@@ -178,35 +189,61 @@
           </div>
           <div class="settings-body">
             <div class="form-group">
-              <label for="setting-theme">主题 (Theme)</label>
+              <label id="theme-label" for="setting-theme">Theme</label>
               <select id="setting-theme" class="form-control">
-                <option value="system">跟随系统 (System Default)</option>
-                <option value="light">浅色模式 (Light)</option>
-                <option value="dark">深色模式 (Dark)</option>
+                <option value="system">System</option>
+                <option value="light">Light</option>
+                <option value="dark">Dark</option>
               </select>
             </div>
-            <button id="btn-save-appearance" class="btn btn-primary btn-full" style="margin-top: 16px;">保存
-              (Save)</button>
+            <button id="btn-save-appearance" class="btn btn-primary btn-full" style="margin-top: 16px;">Save</button>
           </div>
         </div>
 
-        <!-- View 4: Custom API Settings -->
-        <div id="settings-custom-api" class="settings-view" style="display:none;">
+        <!-- View 4: Language Settings -->
+        <div id="settings-language" class="settings-view" style="display:none;">
           <div class="modal-header">
-            <button class="btn btn-ghost settings-back-to-naming" title="返回命名设置">
+            <button class="btn btn-ghost settings-back" title="Back to settings">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
                 <path d="M19 12H5M5 12l7 7M5 12l7-7" />
               </svg>
             </button>
-            <h2>自定义 API</h2>
-            <button class="btn btn-ghost btn-close-settings" title="关闭">
+            <h2 id="settings-language-title">Language</h2>
+            <button class="btn btn-ghost btn-close-settings" title="Close">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
                 <path d="M18 6L6 18M6 6l12 12" />
               </svg>
             </button>
           </div>
           <div class="settings-body">
-            <p class="form-hint" style="margin-bottom: 12px;">支持 OpenAI、SiliconFlow 等兼容接口。</p>
+            <div class="form-group">
+              <label id="language-label" for="setting-language">Language</label>
+              <select id="setting-language" class="form-control">
+                <option value="en">English</option>
+                <option value="zh">中文</option>
+              </select>
+            </div>
+            <button id="btn-save-language" class="btn btn-primary btn-full" style="margin-top: 16px;">Save</button>
+          </div>
+        </div>
+
+        <!-- View 5: Custom API Settings -->
+        <div id="settings-custom-api" class="settings-view" style="display:none;">
+          <div class="modal-header">
+            <button class="btn btn-ghost settings-back-to-naming" title="Back to naming settings">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+                <path d="M19 12H5M5 12l7 7M5 12l7-7" />
+              </svg>
+            </button>
+            <h2 id="settings-custom-title">Custom API</h2>
+            <button class="btn btn-ghost btn-close-settings" title="Close">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+                <path d="M18 6L6 18M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+          <div class="settings-body">
+            <p id="custom-api-hint" class="form-hint" style="margin-bottom: 12px;">Supports OpenAI, SiliconFlow, and other OpenAI-compatible endpoints.</p>
             <div class="form-group">
               <label for="setting-api-url">Base URL</label>
               <input type="text" id="setting-api-url" class="form-control" placeholder="https://api.openai.com/v1">
@@ -216,12 +253,11 @@
               <input type="password" id="setting-api-key" class="form-control" placeholder="sk-...">
             </div>
             <div class="form-group">
-              <label for="setting-model">模型 (Model)</label>
+              <label id="model-label" for="setting-model">Model</label>
               <input type="text" id="setting-model" class="form-control" placeholder="gpt-3.5-turbo">
             </div>
-            <button id="btn-test-connection" class="btn btn-secondary btn-full" style="margin-top: 12px;">测试连接
-              (Test)</button>
-            <button id="btn-save-custom-api" class="btn btn-primary btn-full" style="margin-top: 16px;">保存并返回</button>
+            <button id="btn-test-connection" class="btn btn-secondary btn-full" style="margin-top: 12px;">Test Connection</button>
+            <button id="btn-save-custom-api" class="btn btn-primary btn-full" style="margin-top: 16px;">Save and Return</button>
           </div>
         </div>
 

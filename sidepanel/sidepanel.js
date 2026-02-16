@@ -7,6 +7,150 @@ let treeNodes = [];
 let expandedNodes = new Set();
 let activeSnapshotNodeId = null;
 let activeTabId = null;
+let currentLanguage = 'en';
+
+const I18N = {
+    en: {
+        appTitle: 'AI Chat Branch',
+        trackTab: 'Track Tab',
+        trackCurrentTabTitle: 'Track current tab',
+        settingsTitle: 'Settings',
+        emptyTitle: 'No tabs being tracked yet.',
+        emptyHint: 'Click "Track Tab" to start tracking the current tab, then duplicate it to create branches.',
+        snapshotTitle: 'Snapshot',
+        snapshotVisual: 'Visual',
+        snapshotText: 'Text',
+        close: 'Close',
+        mainSettingsTitle: 'Settings',
+        menuNaming: 'Auto Naming Method',
+        menuAppearance: 'Appearance',
+        menuLanguage: 'Language',
+        namingTitle: 'Auto Naming Method',
+        namingDesc: 'Analyze the conversation automatically and generate concise labels for nodes.',
+        namingTypeLabel: 'Naming Method',
+        namingBuiltin: 'Built-in AI',
+        namingCustom: 'Custom API',
+        namingLocal: 'Local Algorithm',
+        builtinHint: 'Use the built-in AI naming service with zero configuration.',
+        localHint: 'Use local text analysis with no network request. Naming quality may be lower.',
+        configApi: 'Configure API',
+        save: 'Save',
+        appearanceTitle: 'Appearance',
+        languageTitle: 'Language',
+        themeLabel: 'Theme',
+        themeSystem: 'System',
+        themeLight: 'Light',
+        themeDark: 'Dark',
+        languageLabel: 'Language',
+        customTitle: 'Custom API',
+        customHint: 'Supports OpenAI, SiliconFlow, and other OpenAI-compatible endpoints.',
+        modelLabel: 'Model',
+        testConnection: 'Test Connection',
+        saveAndReturn: 'Save and Return',
+        backToSettings: 'Back to settings',
+        backToNaming: 'Back to naming settings',
+        snapshotMissingTitle: 'No snapshot available',
+        snapshotMissingBody: 'No snapshot has been captured yet for this tab.',
+        snapshotCapturedAt: 'Captured {time}',
+        snapshotReasonManual: 'manual',
+        snapshotReasonInitial: 'initial',
+        snapshotReasonPeriodic: 'periodic',
+        snapshotReasonContentChange: 'content change',
+        snapshotReasonHidden: 'tab hidden',
+        snapshotReasonBeforeUnload: 'before unload',
+        snapshotReasonAutoName: 'auto name refresh',
+        untitled: 'Untitled',
+        statusLive: 'Tab is open',
+        statusClosed: 'Tab closed (snapshot available)',
+        emptyPage: 'Empty page',
+        noTextContent: '(No text content)',
+        confirmDeleteWithChildren: 'Delete this node and ALL its children?',
+        confirmDeleteKeepChildren: 'Delete this node? (Children will be kept)',
+        menuSwitchTab: 'Switch to Tab',
+        menuDuplicateTab: 'Duplicate Tab',
+        menuViewSnapshot: 'View Snapshot',
+        menuAutoName: 'Auto Name',
+        menuDeleteNode: 'Delete Node',
+        menuDeleteWithChildren: 'Delete with Children',
+        testing: 'Testing...',
+        testSuccess: 'Connected \u2713',
+        testFailed: 'Failed \u2717',
+        enterApiKeyFirst: 'Please enter an API key first.',
+        runtimeErrorPrefix: 'Error',
+        connectionFailed: 'Connection failed:\n{error}',
+        unknownError: 'Unknown error'
+    },
+    zh: {
+        appTitle: 'AI Chat Branch',
+        trackTab: '\u8ddf\u8e2a\u6807\u7b7e\u9875',
+        trackCurrentTabTitle: '\u8ddf\u8e2a\u5f53\u524d\u6807\u7b7e\u9875',
+        settingsTitle: '\u8bbe\u7f6e',
+        emptyTitle: '\u8fd8\u6ca1\u6709\u8ddf\u8e2a\u7684\u6807\u7b7e\u9875\u3002',
+        emptyHint: '\u70b9\u51fb\u201c\u8ddf\u8e2a\u6807\u7b7e\u9875\u201d\u5f00\u59cb\u8ddf\u8e2a\u5f53\u524d\u6807\u7b7e\u9875\uff0c\u7136\u540e\u590d\u5236\u5b83\u6765\u521b\u5efa\u5206\u652f\u3002',
+        snapshotTitle: '\u5feb\u7167',
+        snapshotVisual: '\u89c6\u89c9',
+        snapshotText: '\u6587\u672c',
+        close: '\u5173\u95ed',
+        mainSettingsTitle: '\u8bbe\u7f6e',
+        menuNaming: '\u81ea\u52a8\u547d\u540d\u65b9\u5f0f',
+        menuAppearance: '\u754c\u9762\u5916\u89c2',
+        menuLanguage: '\u8bed\u8a00',
+        namingTitle: '\u81ea\u52a8\u547d\u540d\u65b9\u5f0f',
+        namingDesc: '\u81ea\u52a8\u5206\u6790\u5bf9\u8bdd\u5185\u5bb9\uff0c\u4e3a\u6bcf\u4e2a\u8282\u70b9\u751f\u6210\u7b80\u77ed\u6807\u9898\u3002',
+        namingTypeLabel: '\u547d\u540d\u65b9\u5f0f',
+        namingBuiltin: '\u5185\u7f6e AI',
+        namingCustom: '\u81ea\u5b9a\u4e49 API',
+        namingLocal: '\u672c\u5730\u7b97\u6cd5',
+        builtinHint: '\u4f7f\u7528\u5185\u7f6e AI \u670d\u52a1\u81ea\u52a8\u547d\u540d\uff0c\u65e0\u9700\u914d\u7f6e\u3002',
+        localHint: '\u4f7f\u7528\u672c\u5730\u6587\u672c\u7b97\u6cd5\uff0c\u65e0\u9700\u8054\u7f51\uff0c\u4f46\u51c6\u786e\u5ea6\u53ef\u80fd\u8f83\u4f4e\u3002',
+        configApi: '\u914d\u7f6e API',
+        save: '\u4fdd\u5b58',
+        appearanceTitle: '\u754c\u9762\u5916\u89c2',
+        languageTitle: '\u8bed\u8a00',
+        themeLabel: '\u4e3b\u9898',
+        themeSystem: '\u8ddf\u968f\u7cfb\u7edf',
+        themeLight: '\u6d45\u8272',
+        themeDark: '\u6df1\u8272',
+        languageLabel: '\u8bed\u8a00',
+        customTitle: '\u81ea\u5b9a\u4e49 API',
+        customHint: '\u652f\u6301 OpenAI\u3001SiliconFlow \u7b49 OpenAI \u517c\u5bb9\u63a5\u53e3\u3002',
+        modelLabel: '\u6a21\u578b',
+        testConnection: '\u6d4b\u8bd5\u8fde\u63a5',
+        saveAndReturn: '\u4fdd\u5b58\u5e76\u8fd4\u56de',
+        backToSettings: '\u8fd4\u56de\u8bbe\u7f6e',
+        backToNaming: '\u8fd4\u56de\u547d\u540d\u8bbe\u7f6e',
+        snapshotMissingTitle: '\u65e0\u53ef\u7528\u5feb\u7167',
+        snapshotMissingBody: '\u8be5\u6807\u7b7e\u9875\u8fd8\u6ca1\u6709\u91c7\u96c6\u5230\u5feb\u7167\u3002',
+        snapshotCapturedAt: '\u91c7\u96c6\u65f6\u95f4 {time}',
+        snapshotReasonManual: '\u624b\u52a8',
+        snapshotReasonInitial: '\u521d\u6b21',
+        snapshotReasonPeriodic: '\u5b9a\u65f6',
+        snapshotReasonContentChange: '\u5185\u5bb9\u53d8\u66f4',
+        snapshotReasonHidden: '\u5207\u6362\u6807\u7b7e',
+        snapshotReasonBeforeUnload: '\u5373\u5c06\u79bb\u5f00',
+        snapshotReasonAutoName: '\u81ea\u52a8\u547d\u540d\u5237\u65b0',
+        untitled: '\u672a\u547d\u540d',
+        statusLive: '\u6807\u7b7e\u9875\u5df2\u6253\u5f00',
+        statusClosed: '\u6807\u7b7e\u9875\u5df2\u5173\u95ed\uff08\u5feb\u7167\u53ef\u7528\uff09',
+        emptyPage: '\u7a7a\u767d\u9875\u9762',
+        noTextContent: '\uff08\u65e0\u6587\u672c\u5185\u5bb9\uff09',
+        confirmDeleteWithChildren: '\u5220\u9664\u8be5\u8282\u70b9\u53ca\u6240\u6709\u5b50\u8282\u70b9\uff1f',
+        confirmDeleteKeepChildren: '\u4ec5\u5220\u9664\u8be5\u8282\u70b9\uff1f\uff08\u5b50\u8282\u70b9\u4f1a\u4fdd\u7559\uff09',
+        menuSwitchTab: '\u5207\u6362\u5230\u6807\u7b7e\u9875',
+        menuDuplicateTab: '\u590d\u5236\u6807\u7b7e\u9875',
+        menuViewSnapshot: '\u67e5\u770b\u5feb\u7167',
+        menuAutoName: '\u81ea\u52a8\u547d\u540d',
+        menuDeleteNode: '\u5220\u9664\u8282\u70b9',
+        menuDeleteWithChildren: '\u5220\u9664\u53ca\u5b50\u8282\u70b9',
+        testing: '\u6d4b\u8bd5\u4e2d...',
+        testSuccess: '\u8fde\u63a5\u6210\u529f \u2713',
+        testFailed: '\u8fde\u63a5\u5931\u8d25 \u2717',
+        enterApiKeyFirst: '\u8bf7\u5148\u8f93\u5165 API Key\u3002',
+        runtimeErrorPrefix: '\u9519\u8bef',
+        connectionFailed: '\u8fde\u63a5\u5931\u8d25:\n{error}',
+        unknownError: '\u672a\u77e5\u9519\u8bef'
+    }
+};
 
 // ── DOM Refs ──
 const treeContainer = document.getElementById('tree-container');
@@ -17,6 +161,120 @@ const snapshotMeta = document.getElementById('snapshot-meta');
 const snapshotContent = document.getElementById('snapshot-content');
 const btnTrack = document.getElementById('btn-track');
 const btnCloseSnapshot = document.getElementById('btn-close-snapshot');
+
+function t(key, vars = {}) {
+    const dict = I18N[currentLanguage] || I18N.en;
+    const fallback = I18N.en[key] || key;
+    let value = dict[key] || fallback;
+    Object.entries(vars).forEach(([name, replacement]) => {
+        value = value.replace(`{${name}}`, replacement);
+    });
+    return value;
+}
+
+function resolveDefaultLanguage() {
+    const uiLanguage = (chrome.i18n && chrome.i18n.getUILanguage ? chrome.i18n.getUILanguage() : 'en').toLowerCase();
+    return uiLanguage.startsWith('zh') ? 'zh' : 'en';
+}
+
+function mapSnapshotReason(reason) {
+    const reasonMap = {
+        manual: t('snapshotReasonManual'),
+        initial: t('snapshotReasonInitial'),
+        periodic: t('snapshotReasonPeriodic'),
+        content_change: t('snapshotReasonContentChange'),
+        visibility_hidden: t('snapshotReasonHidden'),
+        beforeunload: t('snapshotReasonBeforeUnload'),
+        auto_name: t('snapshotReasonAutoName')
+    };
+    return reasonMap[reason] || reason || t('snapshotReasonManual');
+}
+
+function applyI18n() {
+    document.title = t('appTitle');
+
+    const setText = (id, key) => {
+        const el = document.getElementById(id);
+        if (el) el.textContent = t(key);
+    };
+
+    setText('app-title', 'appTitle');
+    setText('label-track-tab', 'trackTab');
+    setText('empty-title', 'emptyTitle');
+    setText('empty-hint', 'emptyHint');
+    if (!activeSnapshotNodeId) setText('snapshot-title', 'snapshotTitle');
+    setText('snapshot-tab-html', 'snapshotVisual');
+    setText('snapshot-tab-text', 'snapshotText');
+    setText('settings-main-title', 'mainSettingsTitle');
+    setText('menu-naming', 'menuNaming');
+    setText('menu-appearance', 'menuAppearance');
+    setText('menu-language', 'menuLanguage');
+    setText('settings-naming-title', 'namingTitle');
+    setText('naming-desc', 'namingDesc');
+    setText('naming-type-label', 'namingTypeLabel');
+    setText('setting-builtin-hint', 'builtinHint');
+    setText('setting-local-hint', 'localHint');
+    setText('btn-config-custom-text', 'configApi');
+    setText('btn-save-naming', 'save');
+    setText('settings-appearance-title', 'appearanceTitle');
+    setText('settings-language-title', 'languageTitle');
+    setText('theme-label', 'themeLabel');
+    setText('language-label', 'languageLabel');
+    setText('btn-save-appearance', 'save');
+    setText('btn-save-language', 'save');
+    setText('settings-custom-title', 'customTitle');
+    setText('custom-api-hint', 'customHint');
+    setText('model-label', 'modelLabel');
+    setText('btn-test-connection', 'testConnection');
+    setText('btn-save-custom-api', 'saveAndReturn');
+
+    const updateTitle = (selector, key) => {
+        document.querySelectorAll(selector).forEach((el) => {
+            el.title = t(key);
+        });
+    };
+    updateTitle('#btn-settings', 'settingsTitle');
+    updateTitle('#btn-track', 'trackCurrentTabTitle');
+    updateTitle('#btn-close-snapshot', 'close');
+    updateTitle('#btn-close-settings', 'close');
+    updateTitle('.btn-close-settings', 'close');
+    updateTitle('.settings-back', 'backToSettings');
+    updateTitle('.settings-back-to-naming', 'backToNaming');
+
+    const namingOptionBuiltin = document.querySelector('#setting-naming-type option[value="builtin"]');
+    const namingOptionCustom = document.querySelector('#setting-naming-type option[value="custom"]');
+    const namingOptionLocal = document.querySelector('#setting-naming-type option[value="local"]');
+    if (namingOptionBuiltin) namingOptionBuiltin.textContent = t('namingBuiltin');
+    if (namingOptionCustom) namingOptionCustom.textContent = t('namingCustom');
+    if (namingOptionLocal) namingOptionLocal.textContent = t('namingLocal');
+
+    const themeSystem = document.querySelector('#setting-theme option[value="system"]');
+    const themeLight = document.querySelector('#setting-theme option[value="light"]');
+    const themeDark = document.querySelector('#setting-theme option[value="dark"]');
+    if (themeSystem) themeSystem.textContent = t('themeSystem');
+    if (themeLight) themeLight.textContent = t('themeLight');
+    if (themeDark) themeDark.textContent = t('themeDark');
+}
+
+async function initializeLocalization() {
+    return new Promise((resolve) => {
+        chrome.storage.local.get(['uiLanguage'], (result) => {
+            const stored = result.uiLanguage;
+            if (stored === 'en' || stored === 'zh') {
+                currentLanguage = stored;
+                applyI18n();
+                resolve();
+                return;
+            }
+
+            currentLanguage = resolveDefaultLanguage();
+            chrome.storage.local.set({ uiLanguage: currentLanguage }, () => {
+                applyI18n();
+                resolve();
+            });
+        });
+    });
+}
 
 // ── Initialize ──
 
@@ -115,7 +373,7 @@ function createNodeElement(node) {
     const hasChildren = node.children.length > 0;
     const isExpanded = expandedNodes.has(node.id);
     const displayLabel = node.label || '';
-    const displayTitle = node.title || 'Untitled';
+    const displayTitle = node.title || t('untitled');
     const timeAgo = getTimeAgo(node.createdAt);
 
     // Node row
@@ -134,7 +392,7 @@ function createNodeElement(node) {
     // Status dot
     const status = document.createElement('span');
     status.className = 'node-status ' + node.status;
-    status.title = node.status === 'live' ? 'Tab is open' : 'Tab closed (snapshot available)';
+    status.title = node.status === 'live' ? t('statusLive') : t('statusClosed');
 
     // Label
     const label = document.createElement('span');
@@ -214,16 +472,16 @@ async function viewSnapshot(nodeId) {
     chrome.runtime.sendMessage({ type: 'GET_SNAPSHOT', nodeId: nodeId }, (response) => {
         if (chrome.runtime.lastError) return;
         if (!response || !response.success || !response.snapshot) {
-            snapshotTitle.textContent = 'No snapshot available';
+            snapshotTitle.textContent = t('snapshotMissingTitle');
             snapshotMeta.textContent = '';
-            snapshotContent.innerHTML = '<div class="text-view" style="color:var(--text-muted); text-align:center; padding-top:40px;">No snapshot has been captured yet for this tab.</div>';
+            snapshotContent.innerHTML = `<div class="text-view" style="color:var(--text-muted); text-align:center; padding-top:40px;">${escapeHtml(t('snapshotMissingBody'))}</div>`;
             snapshotViewer.style.display = '';
             return;
         }
 
         const snap = response.snapshot;
-        snapshotTitle.textContent = snap.title || (node ? node.title : 'Snapshot');
-        snapshotMeta.textContent = `Captured ${formatTime(snap.capturedAt)} · ${snap.reason || 'manual'}`;
+        snapshotTitle.textContent = snap.title || (node ? node.title : t('snapshotTitle'));
+        snapshotMeta.textContent = `${t('snapshotCapturedAt', { time: formatTime(snap.capturedAt) })} · ${mapSnapshotReason(snap.reason)}`;
 
         // Default to HTML view
         showSnapshotHTML(snap.html, snap.styles);
@@ -267,7 +525,7 @@ function showSnapshotHTML(html, pageStyles) {
         .replace(/\s+data-[\w-]+\s*=\s*'[^']*'/gi, '');
 
     if (!cleanHtml.trim()) {
-        cleanHtml = '<p style="color:#888; text-align:center; padding:40px;">Empty page</p>';
+        cleanHtml = `<p style="color:#888; text-align:center; padding:40px;">${escapeHtml(t('emptyPage'))}</p>`;
     }
 
     // ── Reader-mode CSS ──
@@ -372,7 +630,7 @@ function showSnapshotText(text) {
     if (!text || !text.trim()) {
         const div = document.createElement('div');
         div.className = 'text-view';
-        div.textContent = '(No text content)';
+        div.textContent = t('noTextContent');
         snapshotContent.appendChild(div);
         return;
     }
@@ -499,8 +757,8 @@ function startRename(node, labelEl) {
 
 function deleteNode(nodeId, withChildren = false) {
     const msg = withChildren
-        ? 'Delete this node and ALL its children?'
-        : 'Delete this node? (Children will be kept)';
+        ? t('confirmDeleteWithChildren')
+        : t('confirmDeleteKeepChildren');
     if (!confirm(msg)) return;
 
     chrome.runtime.sendMessage({ type: 'DELETE_NODE', nodeId: nodeId, withChildren: withChildren }, () => {
@@ -524,24 +782,24 @@ function showContextMenu(event, node) {
     const items = [];
 
     if (node.status === 'live') {
-        items.push({ label: '🔀 Switch to Tab', action: () => switchToTab(node.tabId) });
+        items.push({ label: `🔀 ${t('menuSwitchTab')}`, action: () => switchToTab(node.tabId) });
         items.push({
-            label: '📋 Duplicate Tab', action: () => {
+            label: `📋 ${t('menuDuplicateTab')}`, action: () => {
                 chrome.tabs.duplicate(node.tabId);
             }
         });
     }
 
     items.push({ separator: true });
-    items.push({ label: '📷 View Snapshot', action: () => viewSnapshot(node.id) });
+    items.push({ label: `📷 ${t('menuViewSnapshot')}`, action: () => viewSnapshot(node.id) });
     items.push({
-        label: '🤖 Auto Name', action: () => {
+        label: `🤖 ${t('menuAutoName')}`, action: () => {
             chrome.runtime.sendMessage({ type: 'AUTO_NAME_NODE', nodeId: node.id });
         }
     });
     items.push({ separator: true });
-    items.push({ label: '🗑️ Delete Node', action: () => deleteNode(node.id, false) });
-    items.push({ label: '⚠️ Delete with Children', action: () => deleteNode(node.id, true), danger: true });
+    items.push({ label: `🗑️ ${t('menuDeleteNode')}`, action: () => deleteNode(node.id, false) });
+    items.push({ label: `⚠️ ${t('menuDeleteWithChildren')}`, action: () => deleteNode(node.id, true), danger: true });
 
     items.forEach(item => {
         if (item.separator) {
@@ -667,7 +925,7 @@ function getTimeAgo(timestamp) {
 
 function formatTime(timestamp) {
     if (!timestamp) return '';
-    return new Date(timestamp).toLocaleString();
+    return new Date(timestamp).toLocaleString(currentLanguage === 'zh' ? 'zh-CN' : 'en-US');
 }
 
 // ── Settings ──
@@ -680,6 +938,7 @@ const btnCloseSettings = document.getElementById('btn-close-settings');
 const settingsMain = document.getElementById('settings-main');
 const settingsNaming = document.getElementById('settings-naming');
 const settingsAppearance = document.getElementById('settings-appearance');
+const settingsLanguage = document.getElementById('settings-language');
 const settingsCustomApi = document.getElementById('settings-custom-api');
 
 // Form elements
@@ -688,10 +947,12 @@ const settingApiUrl = document.getElementById('setting-api-url');
 const settingApiKey = document.getElementById('setting-api-key');
 const settingModel = document.getElementById('setting-model');
 const settingTheme = document.getElementById('setting-theme');
+const settingLanguage = document.getElementById('setting-language');
 
 // Buttons
 const btnSaveNaming = document.getElementById('btn-save-naming');
 const btnSaveAppearance = document.getElementById('btn-save-appearance');
+const btnSaveLanguage = document.getElementById('btn-save-language');
 const btnTestConnection = document.getElementById('btn-test-connection');
 const btnConfigCustom = document.getElementById('btn-config-custom');
 const btnSaveCustomApi = document.getElementById('btn-save-custom-api');
@@ -703,6 +964,7 @@ function showSettingsView(viewId) {
     settingsMain.style.display = 'none';
     settingsNaming.style.display = 'none';
     settingsAppearance.style.display = 'none';
+    if (settingsLanguage) settingsLanguage.style.display = 'none';
     if (settingsCustomApi) settingsCustomApi.style.display = 'none';
     // Show target
     const target = document.getElementById(viewId);
@@ -715,7 +977,7 @@ function goBackToMain() {
 
 function openSettings() {
     // Load all settings
-    chrome.storage.local.get(['aiNamingType', 'aiApiUrl', 'aiApiKey', 'aiModel', 'theme'], (result) => {
+    chrome.storage.local.get(['aiNamingType', 'aiApiUrl', 'aiApiKey', 'aiModel', 'theme', 'uiLanguage'], (result) => {
         // Validate naming type (ensure it's one of the valid options)
         const validTypes = ['builtin', 'custom', 'local'];
         let namingType = result.aiNamingType || 'builtin';
@@ -728,6 +990,11 @@ function openSettings() {
         settingApiKey.value = result.aiApiKey || '';
         settingModel.value = result.aiModel || 'gpt-3.5-turbo';
         settingTheme.value = result.theme || 'system';
+        if (settingLanguage) {
+            settingLanguage.value = (result.uiLanguage === 'zh' || result.uiLanguage === 'en') ? result.uiLanguage : currentLanguage;
+            currentLanguage = settingLanguage.value;
+        }
+        applyI18n();
         updateSettingsUI();
         // Always start at main menu
         showSettingsView('settings-main');
@@ -779,6 +1046,15 @@ function saveAppearanceSettings() {
     });
 }
 
+function saveLanguageSettings() {
+    const language = (settingLanguage && settingLanguage.value === 'zh') ? 'zh' : 'en';
+    chrome.storage.local.set({ uiLanguage: language }, () => {
+        currentLanguage = language;
+        applyI18n();
+        goBackToMain();
+    });
+}
+
 function saveCustomApiSettings() {
     const settings = {
         aiApiUrl: (settingApiUrl.value.trim() || 'https://api.openai.com/v1').replace(/\/$/, ''),
@@ -808,7 +1084,7 @@ function applyTheme(theme) {
 
 function testConnection() {
     const originalText = btnTestConnection.innerText;
-    btnTestConnection.innerText = 'Testing...';
+    btnTestConnection.innerText = t('testing');
     btnTestConnection.disabled = true;
 
     const namingType = settingNamingType.value;
@@ -820,7 +1096,7 @@ function testConnection() {
         model = settingModel.value.trim();
 
         if (!apiKey) {
-            alert('请先输入 API Key');
+            alert(t('enterApiKeyFirst'));
             resetButton();
             return;
         }
@@ -834,19 +1110,19 @@ function testConnection() {
         model: model || ''
     }, (response) => {
         if (chrome.runtime.lastError) {
-            alert('Error: ' + chrome.runtime.lastError.message);
+            alert(`${t('runtimeErrorPrefix')}: ${chrome.runtime.lastError.message}`);
             resetButton();
             return;
         }
 
         if (response && response.success) {
-            btnTestConnection.innerText = '连接成功 ✓';
+            btnTestConnection.innerText = t('testSuccess');
             btnTestConnection.style.background = 'var(--green)';
             btnTestConnection.style.color = '#fff';
             setTimeout(resetButton, 2000);
         } else {
-            alert('连接失败:\n' + (response ? response.error : 'Unknown error'));
-            btnTestConnection.innerText = '连接失败 ✗';
+            alert(t('connectionFailed', { error: response ? response.error : t('unknownError') }));
+            btnTestConnection.innerText = t('testFailed');
             btnTestConnection.style.background = 'var(--red)';
             btnTestConnection.style.color = '#fff';
             setTimeout(resetButton, 2000);
@@ -887,6 +1163,7 @@ if (btnSettings) {
 
     if (btnSaveNaming) btnSaveNaming.addEventListener('click', saveNamingSettings);
     if (btnSaveAppearance) btnSaveAppearance.addEventListener('click', saveAppearanceSettings);
+    if (btnSaveLanguage) btnSaveLanguage.addEventListener('click', saveLanguageSettings);
     if (btnTestConnection) btnTestConnection.addEventListener('click', testConnection);
     if (btnConfigCustom) btnConfigCustom.addEventListener('click', () => showSettingsView('settings-custom-api'));
     if (btnSaveCustomApi) btnSaveCustomApi.addEventListener('click', saveCustomApiSettings);
@@ -903,6 +1180,12 @@ if (btnSettings) {
     if (settingTheme) {
         settingTheme.addEventListener('change', () => applyTheme(settingTheme.value));
     }
+    if (settingLanguage) {
+        settingLanguage.addEventListener('change', () => {
+            currentLanguage = (settingLanguage.value === 'zh') ? 'zh' : 'en';
+            applyI18n();
+        });
+    }
 
     // Click backdrop to close
     settingsModal.addEventListener('click', (e) => {
@@ -911,8 +1194,9 @@ if (btnSettings) {
 }
 
 // ── Start ──
-// Initialize theme
-chrome.storage.local.get(['theme'], (result) => {
+// Initialize theme + language
+chrome.storage.local.get(['theme'], async (result) => {
     applyTheme(result.theme || 'system');
+    await initializeLocalization();
     init();
 });

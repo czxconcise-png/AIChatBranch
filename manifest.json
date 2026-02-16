@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "AI Conversation Tree",
+  "name": "AI Chat Branch",
   "version": "1.0.0",
-  "description": "Track and visualize tab branching as a tree. Never lose ephemeral page content again.",
+  "description": "Track and visualize AI chat branching as a tree. Keep snapshots so no conversation context gets lost.",
   "permissions": [
     "tabs",
     "sidePanel",
@@ -28,16 +28,16 @@
     "default_path": "sidepanel/sidepanel.html"
   },
   "action": {
-    "default_title": "AI Conversation Tree",
+    "default_title": "AI Chat Branch",
     "default_icon": {
-      "16": "icons/icon16.svg",
-      "48": "icons/icon48.svg",
-      "128": "icons/icon.svg"
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
     }
   },
   "icons": {
-    "16": "icons/icon16.svg",
-    "48": "icons/icon48.svg",
-    "128": "icons/icon.svg"
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
   }
 }
