@@ -37,5 +37,3 @@ Fixed core issues with how nodes are created and connected.
 - **Reliable Forking**: Child nodes are now only created automatically when a tab is **duplicated** (matching URL), preventing unrelated new tabs from cluttering your trees.
 - **Duplicate Protection**: Improved race-condition handling during fast tab duplication.
 
----
-*All changes have been committed and pushed to the main branch.*
