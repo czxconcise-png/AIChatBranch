@@ -31,13 +31,19 @@ const MODEL_COOLDOWN_MS = 60_000; // 60 seconds
 const AI_NAMING_TIMEOUT_MS = 8_000; // 8 seconds timeout, then local fallback
 const AUTO_NAME_MIN_INCREMENTAL_TEXT = 12;
 const AUTO_NAME_MIN_FULL_TEXT = 80;
+const AUTO_NAME_CONTEXT_TAIL_MAX_CHARS = 2500;
+const AUTO_NAME_LATEST_CHUNK_MAX_CHARS = 1200;
+const RECENT_ACTIVATION_WINDOW_MS = 12_000;
+const TAB_OPEN_RESOLVE_WINDOW_MS = 2_500;
+const PARENT_CONFIDENCE_THRESHOLD = 0.70;
 
 // ── Tracked state (in-memory mirror, persisted to IndexedDB) ──
 // Map of tabId -> nodeId for quick lookup
 const tabToNode = new Map();
-const tabCreationMeta = new Map(); // tabId -> { initialWasBlank: boolean }
+const tabCreationMeta = new Map(); // tabId -> { initialWasBlank, openedAt, windowId, openerTabId }
 const tabTrackingLocks = new Set(); // tabIds currently being auto-tracked
 const namingInFlight = new Map(); // nodeId -> Promise<string>
+const recentWindowContext = new Map(); // windowId -> { lastActivatedTabId, lastActivatedAt, lastTrackedTabId, lastTrackedNodeId, lastTrackedUrl, lastTrackedAt }
 
 // Generate unique IDs
 function generateId() {
@@ -92,17 +98,8 @@ async function createRootNode(tab) {
     await TreeStorage.saveNode(node);
     tabToNode.set(tab.id, nodeId);
 
-    // Tell content script to start tracking
-    try {
-        await chrome.tabs.sendMessage(tab.id, { type: 'START_TRACKING' });
-    } catch {
-        // Content script might not be ready yet, retry after a delay
-        setTimeout(async () => {
-            try {
-                await chrome.tabs.sendMessage(tab.id, { type: 'START_TRACKING' });
-            } catch { /* give up */ }
-        }, 1000);
-    }
+    // Ensure tracking is active even for tabs opened before extension reload.
+    await startTrackingInTabWithRetry(tab.id, tab.url || '');
 
     // Notify side panel to refresh
     broadcastToSidePanel({ type: 'TREE_UPDATED' });
@@ -134,17 +131,8 @@ async function createChildNode(tab, parentTabId) {
     await TreeStorage.saveNode(node);
     tabToNode.set(tab.id, nodeId);
 
-    // Tell content script to start tracking
-    try {
-        await chrome.tabs.sendMessage(tab.id, { type: 'START_TRACKING' });
-    } catch {
-        // Content script might not be ready yet, retry after a delay
-        setTimeout(async () => {
-            try {
-                await chrome.tabs.sendMessage(tab.id, { type: 'START_TRACKING' });
-            } catch { /* give up */ }
-        }, 1000);
-    }
+    // Ensure tracking is active even for tabs opened before extension reload.
+    await startTrackingInTabWithRetry(tab.id, tab.url || '');
 
     broadcastToSidePanel({ type: 'TREE_UPDATED' });
     scheduleInitialAutoNaming(nodeId);
@@ -162,6 +150,96 @@ function scheduleInitialAutoNaming(nodeId) {
             });
         }, delayMs);
     });
+}
+
+function canInjectContentScript(url) {
+    if (!url || typeof url !== 'string') return false;
+    return !(
+        url.startsWith('chrome://') ||
+        url.startsWith('chrome-extension://') ||
+        url.startsWith('edge://') ||
+        url.startsWith('devtools://') ||
+        url.startsWith('about:')
+    );
+}
+
+async function ensureContentScriptReady(tabId, tabUrl) {
+    if (!tabId) return false;
+    try {
+        const ping = await chrome.tabs.sendMessage(tabId, { type: 'PING' });
+        if (ping && ping.success) return true;
+    } catch {
+        // Content script missing or stale.
+    }
+
+    if (!canInjectContentScript(tabUrl)) {
+        return false;
+    }
+
+    try {
+        await chrome.scripting.executeScript({
+            target: { tabId: tabId },
+            files: ['content.js']
+        });
+    } catch {
+        return false;
+    }
+
+    try {
+        const ping = await chrome.tabs.sendMessage(tabId, { type: 'PING' });
+        return !!(ping && ping.success);
+    } catch {
+        return false;
+    }
+}
+
+async function startTrackingInTab(tabId, tabUrl) {
+    if (!tabId) return false;
+
+    try {
+        await chrome.tabs.sendMessage(tabId, { type: 'START_TRACKING' });
+        return true;
+    } catch {
+        const ready = await ensureContentScriptReady(tabId, tabUrl || '');
+        if (!ready) return false;
+        try {
+            await chrome.tabs.sendMessage(tabId, { type: 'START_TRACKING' });
+            return true;
+        } catch {
+            return false;
+        }
+    }
+}
+
+async function startTrackingInTabWithRetry(tabId, tabUrl) {
+    const started = await startTrackingInTab(tabId, tabUrl);
+    if (started) return true;
+
+    setTimeout(async () => {
+        try {
+            await startTrackingInTab(tabId, tabUrl);
+        } catch {
+            // Best effort only.
+        }
+    }, 1000);
+
+    return false;
+}
+
+async function getContentWithInjectionFallback(tabId, tabUrl) {
+    if (!tabId) return null;
+
+    try {
+        return await chrome.tabs.sendMessage(tabId, { type: 'GET_CONTENT' });
+    } catch {
+        const ready = await ensureContentScriptReady(tabId, tabUrl || '');
+        if (!ready) return null;
+        try {
+            return await chrome.tabs.sendMessage(tabId, { type: 'GET_CONTENT' });
+        } catch {
+            return null;
+        }
+    }
 }
 
 function normalizeComparableUrl(rawUrl) {
@@ -205,6 +283,125 @@ function releaseAutoTrackLock(tabId) {
     tabTrackingLocks.delete(tabId);
 }
 
+function addCandidateScore(candidates, tabId, score, reason) {
+    if (!tabId || !tabToNode.has(tabId)) return;
+    const current = candidates.get(tabId) || { score: 0, reasons: [] };
+    current.score += score;
+    if (reason) current.reasons.push(reason);
+    candidates.set(tabId, current);
+}
+
+function updateRecentTrackedUrl(tabId, rawUrl) {
+    if (!tabId) return;
+    const normalized = normalizeComparableUrl(rawUrl || '');
+    for (const [windowId, context] of recentWindowContext.entries()) {
+        if (context.lastTrackedTabId === tabId) {
+            context.lastTrackedUrl = normalized;
+            recentWindowContext.set(windowId, context);
+        }
+    }
+}
+
+function clearRecentContextForTab(tabId) {
+    if (!tabId) return;
+    for (const [windowId, context] of recentWindowContext.entries()) {
+        let changed = false;
+        if (context.lastActivatedTabId === tabId) {
+            context.lastActivatedTabId = null;
+            context.lastActivatedAt = 0;
+            changed = true;
+        }
+        if (context.lastTrackedTabId === tabId) {
+            context.lastTrackedTabId = null;
+            context.lastTrackedNodeId = null;
+            context.lastTrackedUrl = '';
+            context.lastTrackedAt = 0;
+            changed = true;
+        }
+        if (changed) {
+            if (!context.lastActivatedTabId && !context.lastTrackedTabId) {
+                recentWindowContext.delete(windowId);
+            } else {
+                recentWindowContext.set(windowId, context);
+            }
+        }
+    }
+}
+
+async function inferParentTabForManualOpen(tab, normalizedUrl) {
+    if (!tab || !tab.id || !normalizedUrl) return null;
+
+    const now = Date.now();
+    const meta = tabCreationMeta.get(tab.id);
+    const candidates = new Map();
+    let openerCandidateTabId = null;
+    let recentCandidateTabId = null;
+
+    if (tab.openerTabId && tabToNode.has(tab.openerTabId)) {
+        openerCandidateTabId = tab.openerTabId;
+        addCandidateScore(candidates, tab.openerTabId, 0.55, 'opener_tracked');
+
+        const openerNodeId = tabToNode.get(tab.openerTabId);
+        const openerNode = openerNodeId ? await TreeStorage.getNode(openerNodeId) : null;
+        if (openerNode) {
+            const openerUrl = normalizeComparableUrl(openerNode.url || '');
+            if (openerUrl && openerUrl === normalizedUrl) {
+                addCandidateScore(candidates, tab.openerTabId, 0.20, 'opener_url_match');
+            }
+        }
+    }
+
+    const context = recentWindowContext.get(tab.windowId);
+    if (context && context.lastTrackedTabId && tabToNode.has(context.lastTrackedTabId)) {
+        const trackedAge = now - (context.lastTrackedAt || 0);
+        if (trackedAge <= RECENT_ACTIVATION_WINDOW_MS) {
+            recentCandidateTabId = context.lastTrackedTabId;
+            addCandidateScore(candidates, context.lastTrackedTabId, 0.35, 'recent_tracked');
+            if (context.lastTrackedUrl && context.lastTrackedUrl === normalizedUrl) {
+                addCandidateScore(candidates, context.lastTrackedTabId, 0.20, 'recent_url_match');
+            }
+            const switchedAway = context.lastActivatedTabId && context.lastActivatedTabId !== context.lastTrackedTabId;
+            const switchedAge = now - (context.lastActivatedAt || 0);
+            if (switchedAway && switchedAge <= RECENT_ACTIVATION_WINDOW_MS) {
+                addCandidateScore(candidates, context.lastTrackedTabId, -0.15, 'focus_switched');
+            }
+        }
+    }
+
+    if (meta && meta.initialWasBlank && recentCandidateTabId) {
+        addCandidateScore(candidates, recentCandidateTabId, 0.10, 'blank_paste_hint');
+    }
+
+    if (meta && (now - (meta.openedAt || now)) > TAB_OPEN_RESOLVE_WINDOW_MS) {
+        for (const [candidateTabId] of candidates.entries()) {
+            addCandidateScore(candidates, candidateTabId, -0.10, 'stale_open_window');
+        }
+    }
+
+    if (
+        openerCandidateTabId &&
+        recentCandidateTabId &&
+        openerCandidateTabId !== recentCandidateTabId
+    ) {
+        addCandidateScore(candidates, openerCandidateTabId, -0.125, 'candidate_conflict');
+        addCandidateScore(candidates, recentCandidateTabId, -0.125, 'candidate_conflict');
+    }
+
+    let best = null;
+    for (const [candidateTabId, candidate] of candidates.entries()) {
+        if (candidateTabId === tab.id || !tabToNode.has(candidateTabId)) continue;
+        if (!best || candidate.score > best.score) {
+            best = { tabId: candidateTabId, score: candidate.score, reasons: candidate.reasons };
+        }
+    }
+
+    if (!best || best.score < PARENT_CONFIDENCE_THRESHOLD) {
+        return null;
+    }
+
+    return best;
+}
+
 /**
  * Duplicate tabs should become child nodes.
  * Manual URL copy/paste usually starts from a blank new tab and should be root.
@@ -242,7 +439,7 @@ async function maybeTrackDuplicateFromNavigation(tab, rawUrl) {
 
 /**
  * For manually opened tabs with the same URL as tracked conversations:
- * create a new root node (no parent inference to avoid mis-attachment).
+ * infer parent with high confidence, otherwise create as root.
  */
 async function maybeCreateRootNodeFromTrackedUrl(tab, rawUrl) {
     if (!tab || !tab.id || tabToNode.has(tab.id)) return false;
@@ -255,6 +452,24 @@ async function maybeCreateRootNodeFromTrackedUrl(tab, rawUrl) {
         const nodes = await TreeStorage.getAllNodes();
         const hasTrackedMatch = nodes.some((node) => normalizeComparableUrl(node.url || '') === normalizedUrl);
         if (!hasTrackedMatch) return false;
+
+        const inferredParent = await inferParentTabForManualOpen(tab, normalizedUrl);
+        if (inferredParent && inferredParent.tabId && tabToNode.has(inferredParent.tabId)) {
+            const childTab = { ...tab, url: rawUrl || tab.url || '' };
+            await createChildNode(childTab, inferredParent.tabId);
+            tabCreationMeta.delete(tab.id);
+            console.log(
+                '[AI Tree] Same-URL manual tab inferred as child:',
+                tab.id,
+                'parentTab:',
+                inferredParent.tabId,
+                'score:',
+                inferredParent.score.toFixed(3),
+                'reasons:',
+                inferredParent.reasons.join(',')
+            );
+            return true;
+        }
 
         const rootTab = { ...tab, url: rawUrl || tab.url || '' };
         await createRootNode(rootTab);
@@ -271,7 +486,12 @@ async function maybeCreateRootNodeFromTrackedUrl(tab, rawUrl) {
 // Detect tab duplication (only true duplicates, not just any new tab)
 chrome.tabs.onCreated.addListener(async (tab) => {
     const initialUrl = tab.url || tab.pendingUrl || '';
-    tabCreationMeta.set(tab.id, { initialWasBlank: isBlankLikeUrl(initialUrl) || shouldSkipAutoTrackUrl(initialUrl) });
+    tabCreationMeta.set(tab.id, {
+        initialWasBlank: isBlankLikeUrl(initialUrl) || shouldSkipAutoTrackUrl(initialUrl),
+        openedAt: Date.now(),
+        windowId: tab.windowId || null,
+        openerTabId: tab.openerTabId || null,
+    });
 
     // Duplicate detection pass (non-blank opener clone only)
     setTimeout(async () => {
@@ -325,6 +545,7 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
     }
     if (changeInfo.url && changeInfo.url !== node.url) {
         node.url = changeInfo.url;
+        updateRecentTrackedUrl(tabId, changeInfo.url);
         changed = true;
     }
 
@@ -336,24 +557,53 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
     // Snapshot reliability: re-send START_TRACKING when tab finishes loading
     // This fixes missing snapshots for duplicated tabs where content script wasn't ready
     if (changeInfo.status === 'complete') {
-        try {
-            await chrome.tabs.sendMessage(tabId, { type: 'START_TRACKING' });
-        } catch {
-            // Content script not ready, will retry on next update
-        }
+        await startTrackingInTab(tabId, node.url || tab.url || '');
     }
 });
 
 // ── Active tab tracking ──
 
-chrome.tabs.onActivated.addListener((activeInfo) => {
+chrome.tabs.onActivated.addListener(async (activeInfo) => {
     broadcastToSidePanel({ type: 'TAB_ACTIVATED', tabId: activeInfo.tabId });
+
+    const now = Date.now();
+    const windowId = activeInfo.windowId;
+    const context = recentWindowContext.get(windowId) || {
+        lastActivatedTabId: null,
+        lastActivatedAt: 0,
+        lastTrackedTabId: null,
+        lastTrackedNodeId: null,
+        lastTrackedUrl: '',
+        lastTrackedAt: 0,
+    };
+
+    context.lastActivatedTabId = activeInfo.tabId;
+    context.lastActivatedAt = now;
+
+    if (tabToNode.has(activeInfo.tabId)) {
+        const nodeId = tabToNode.get(activeInfo.tabId);
+        let node = null;
+        try {
+            node = await TreeStorage.getNode(nodeId);
+        } catch {
+            node = null;
+        }
+        if (node) {
+            context.lastTrackedTabId = activeInfo.tabId;
+            context.lastTrackedNodeId = nodeId;
+            context.lastTrackedUrl = normalizeComparableUrl(node.url || '');
+            context.lastTrackedAt = now;
+        }
+    }
+
+    recentWindowContext.set(windowId, context);
 });
 
 // Handle tab close
 chrome.tabs.onRemoved.addListener(async (tabId) => {
     tabCreationMeta.delete(tabId);
     releaseAutoTrackLock(tabId);
+    clearRecentContextForTab(tabId);
     if (!tabToNode.has(tabId)) return;
 
     const nodeId = tabToNode.get(tabId);
@@ -534,6 +784,173 @@ function deriveLocalAutoLabel(incrementalText, fullText, fallbackTitle) {
     return sanitizeGeneratedLabel(candidate);
 }
 
+function isNoiseLine(line) {
+    if (!line) return true;
+    const text = line.trim();
+    if (text.length < 2) return true;
+    if (/^\d{1,2}:\d{2}/.test(text)) return true; // timestamps
+    if (/^(Copy|Copy code|Edit|Share|Like|Dislike|More|Regenerate|Regenerate response|Retry|Search|Deep Research|You said|You asked|You)$/i.test(text)) return true;
+    if (/^[\p{Emoji}\s]+$/u.test(text)) return true;
+    return false;
+}
+
+function normalizeNamingText(rawText) {
+    if (!rawText || typeof rawText !== 'string') return '';
+    return rawText.replace(/\r/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+function sanitizeTurnChunk(rawText, maxChars = AUTO_NAME_LATEST_CHUNK_MAX_CHARS) {
+    const normalized = normalizeNamingText(rawText);
+    if (!normalized) return '';
+    const cleaned = normalized
+        .split('\n')
+        .map((line) => line.trim())
+        .filter((line) => !isNoiseLine(line))
+        .join('\n')
+        .trim();
+    if (!cleaned) return '';
+    if (cleaned.length <= maxChars) return cleaned;
+    return cleaned.slice(cleaned.length - maxChars).trim();
+}
+
+function splitMeaningfulParagraphs(rawText) {
+    const normalized = normalizeNamingText(rawText);
+    if (!normalized) return [];
+
+    return normalized
+        .split(/\n{2,}/)
+        .map((paragraph) => sanitizeTurnChunk(paragraph, AUTO_NAME_LATEST_CHUNK_MAX_CHARS))
+        .filter((paragraph) => paragraph.length > 0);
+}
+
+function looksLikeUserPromptText(text) {
+    if (!text) return false;
+    const trimmed = text.trim();
+    if (trimmed.length === 0 || trimmed.length > 260) return false;
+    if (/[?？]$/.test(trimmed)) return true;
+    if (/^(Q[:：]|问[:：]|用户[:：]|User[:：]|You[:：]|我[:：])/i.test(trimmed)) return true;
+    if (/^(请|帮我|怎么|如何|为什么|给我|写一个|总结|解释|分析)/.test(trimmed)) return true;
+    if (/^(what|how|why|can you|could you|please|write|summarize|explain|analyze)\b/i.test(trimmed)) return true;
+    return false;
+}
+
+function chooseLatestAssistantChunk(paragraphs) {
+    if (!paragraphs || paragraphs.length === 0) return '';
+    for (let i = paragraphs.length - 1; i >= 0; i -= 1) {
+        const paragraph = paragraphs[i];
+        // Prefer the freshest non-trivial paragraph instead of jumping too far back.
+        if (paragraph.length >= 8) return paragraph;
+    }
+    return paragraphs[paragraphs.length - 1];
+}
+
+function chooseLatestUserChunk(paragraphs, assistantChunk) {
+    if (!paragraphs || paragraphs.length === 0) return '';
+
+    const assistantIndex = assistantChunk ? paragraphs.lastIndexOf(assistantChunk) : paragraphs.length - 1;
+    for (let i = assistantIndex - 1; i >= 0; i -= 1) {
+        const candidate = paragraphs[i];
+        if (looksLikeUserPromptText(candidate)) return candidate;
+    }
+    for (let i = assistantIndex - 1; i >= 0; i -= 1) {
+        const candidate = paragraphs[i];
+        if (candidate.length <= 220) return candidate;
+    }
+    return '';
+}
+
+function extractLatestTurnForNaming(fullText, incrementalText) {
+    const incrementalParagraphs = splitMeaningfulParagraphs(incrementalText);
+    const fullParagraphs = splitMeaningfulParagraphs(fullText);
+    const sourceParagraphs = incrementalParagraphs.length > 0 ? incrementalParagraphs : fullParagraphs;
+
+    let latestAssistantChunk = chooseLatestAssistantChunk(sourceParagraphs);
+    let latestUserChunk = chooseLatestUserChunk(sourceParagraphs, latestAssistantChunk);
+
+    if (!latestAssistantChunk && fullParagraphs.length > 0) {
+        latestAssistantChunk = chooseLatestAssistantChunk(fullParagraphs);
+    }
+    if (!latestUserChunk && fullParagraphs.length > 0) {
+        latestUserChunk = chooseLatestUserChunk(fullParagraphs, latestAssistantChunk);
+    }
+
+    const contextSource = fullParagraphs.length > 0 ? fullParagraphs : incrementalParagraphs;
+    const contextTail = contextSource
+        .slice(-6)
+        .join('\n\n')
+        .slice(-AUTO_NAME_CONTEXT_TAIL_MAX_CHARS)
+        .trim();
+
+    return {
+        latestAssistantChunk: sanitizeTurnChunk(latestAssistantChunk, AUTO_NAME_LATEST_CHUNK_MAX_CHARS),
+        latestUserChunk: sanitizeTurnChunk(latestUserChunk, AUTO_NAME_LATEST_CHUNK_MAX_CHARS),
+        contextTail: sanitizeTurnChunk(contextTail, AUTO_NAME_CONTEXT_TAIL_MAX_CHARS),
+    };
+}
+
+function buildLatestFocusedPrompt(latestTurn) {
+    const sections = [];
+    if (latestTurn.latestAssistantChunk) {
+        sections.push(`Latest assistant response:\n${latestTurn.latestAssistantChunk}`);
+    }
+    if (latestTurn.latestUserChunk) {
+        sections.push(`Latest user request:\n${latestTurn.latestUserChunk}`);
+    }
+    if (latestTurn.contextTail) {
+        sections.push(`Recent conversation context:\n${latestTurn.contextTail}`);
+    }
+    return sections.join('\n\n').slice(-5000);
+}
+
+function extractLabelFromTailText(text) {
+    if (!text || text.trim().length === 0) return '';
+
+    const lines = text.split(/\n/)
+        .map((line) => line.trim())
+        .filter((line) => !isNoiseLine(line));
+
+    if (lines.length === 0) return '';
+
+    let candidate = '';
+    for (let i = lines.length - 1; i >= 0; i -= 1) {
+        const line = lines[i];
+        if (line.length >= 4 && line.length <= 120) {
+            candidate = line;
+            break;
+        }
+    }
+    if (!candidate) candidate = lines[lines.length - 1];
+
+    candidate = candidate.replace(/^(You said|You asked|You|User|用户|问)[:：\s]*/i, '');
+
+    const sentenceEnd = candidate.search(/[。！？.!?\n]/);
+    if (sentenceEnd > 0 && sentenceEnd < 60) {
+        candidate = candidate.substring(0, sentenceEnd + 1);
+    }
+    if (candidate.length > 50) {
+        candidate = candidate.substring(0, 50) + '…';
+    }
+    return candidate;
+}
+
+function deriveLatestLocalAutoLabel(latestTurn, incrementalText, fullText, fallbackTitle) {
+    const orderedSources = [
+        latestTurn.latestAssistantChunk,
+        latestTurn.latestUserChunk,
+        incrementalText,
+        latestTurn.contextTail,
+    ];
+
+    for (const source of orderedSources) {
+        if (!source) continue;
+        const candidate = extractLabelFromTailText(source) || extractLabelFromNewText(source);
+        const normalized = sanitizeGeneratedLabel(candidate);
+        if (normalized) return normalized;
+    }
+
+    return deriveLocalAutoLabel(incrementalText, fullText, fallbackTitle);
+}
+
 async function saveLiveSnapshotFromContent(node, content, reason) {
     if (!node || !content) return;
     const snapshot = {
@@ -554,15 +971,11 @@ async function collectNamingText(node, options = {}) {
     const incrementalText = (options.incrementalText || '').trim();
 
     if (!fullText && node.status === 'live' && node.tabId) {
-        try {
-            const response = await chrome.tabs.sendMessage(node.tabId, { type: 'GET_CONTENT' });
-            if (response && response.text) {
-                fullText = (response.text || '').trim();
-                // Keep snapshot freshness without waiting for the regular periodic capture.
-                await saveLiveSnapshotFromContent(node, response, options.snapshotReason || 'auto_name');
-            }
-        } catch {
-            // Content script may not be ready yet.
+        const response = await getContentWithInjectionFallback(node.tabId, node.url || '');
+        if (response && response.text) {
+            fullText = (response.text || '').trim();
+            // Keep snapshot freshness without waiting for the regular periodic capture.
+            await saveLiveSnapshotFromContent(node, response, options.snapshotReason || 'auto_name');
         }
     }
 
@@ -613,53 +1026,59 @@ async function runAutoNaming(nodeId, options = {}) {
     await setNodeNamingStatus(nodeId, 'pending');
 
     try {
-        const { fullText, incrementalText } = await collectNamingText(node, options);
+        const namingText = await collectNamingText(node, options);
+        let fullText = namingText.fullText;
+        const incrementalText = namingText.incrementalText;
         const shouldUseIncremental = incrementalText.length >= AUTO_NAME_MIN_INCREMENTAL_TEXT;
         const needsInitialNaming = !node.autoLabel && fullText.length >= AUTO_NAME_MIN_FULL_TEXT;
+        const latestTurn = extractLatestTurnForNaming(fullText, incrementalText);
+        const latestPromptText = buildLatestFocusedPrompt(latestTurn);
 
         if (!options.force && !shouldUseIncremental && !needsInitialNaming) {
             return '';
         }
 
-        if (!fullText) {
-            return '';
-        }
-
-        const settings = await chrome.storage.local.get(['aiNamingType', 'aiApiUrl', 'aiApiKey', 'aiModel']);
-        const namingType = settings.aiNamingType || 'builtin';
-
-        const promptText = shouldUseIncremental
-            ? `${fullText}\n${incrementalText}`.slice(-5000)
-            : fullText.slice(-5000);
-
         let label = '';
+        const hasConversationText = !!fullText;
+        if (!hasConversationText) {
+            label = deriveLatestLocalAutoLabel(latestTurn, incrementalText, '', node.title || '');
+            if (!label) return '';
+        } else {
+            const settings = await chrome.storage.local.get(['aiNamingType', 'aiApiUrl', 'aiApiKey', 'aiModel']);
+            const namingType = settings.aiNamingType || 'builtin';
+            const promptText = latestPromptText || (
+                shouldUseIncremental
+                    ? `${fullText}\n${incrementalText}`.slice(-5000)
+                    : fullText.slice(-5000)
+            );
 
-        if (namingType === 'builtin') {
-            try {
-                label = await withTimeout(
-                    generateTitleWithFallback(promptText, null, BUILTIN_API_URL),
-                    AI_NAMING_TIMEOUT_MS,
-                    'Built-in AI naming timeout'
-                );
-            } catch (e) {
-                console.warn('[AI Tree] Built-in AI naming failed, using local fallback:', e.message);
-            }
-        } else if (namingType === 'custom' && settings.aiApiKey) {
-            try {
-                const baseUrl = settings.aiApiUrl || 'https://api.openai.com/v1';
-                label = await withTimeout(
-                    generateTitleFromOpenAICompatible(promptText, settings.aiApiKey, settings.aiModel, baseUrl),
-                    AI_NAMING_TIMEOUT_MS,
-                    'Custom AI naming timeout'
-                );
-            } catch (e) {
-                console.warn('[AI Tree] Custom AI naming failed, using local fallback:', e.message);
+            if (namingType === 'builtin') {
+                try {
+                    label = await withTimeout(
+                        generateTitleWithFallback(promptText, null, BUILTIN_API_URL),
+                        AI_NAMING_TIMEOUT_MS,
+                        'Built-in AI naming timeout'
+                    );
+                } catch (e) {
+                    console.warn('[AI Tree] Built-in AI naming failed, using local fallback:', e.message);
+                }
+            } else if (namingType === 'custom' && settings.aiApiKey) {
+                try {
+                    const baseUrl = settings.aiApiUrl || 'https://api.openai.com/v1';
+                    label = await withTimeout(
+                        generateTitleFromOpenAICompatible(promptText, settings.aiApiKey, settings.aiModel, baseUrl),
+                        AI_NAMING_TIMEOUT_MS,
+                        'Custom AI naming timeout'
+                    );
+                } catch (e) {
+                    console.warn('[AI Tree] Custom AI naming failed, using local fallback:', e.message);
+                }
             }
         }
 
         label = sanitizeGeneratedLabel(label);
         if (!label) {
-            label = deriveLocalAutoLabel(incrementalText, fullText, node.title || '');
+            label = deriveLatestLocalAutoLabel(latestTurn, incrementalText, fullText, node.title || '');
         }
 
         if (!label) {
@@ -903,6 +1322,7 @@ async function handleStartTracking(tabId) {
             // Clean up the auto-created child node
             await TreeStorage.deleteNode(existingNodeId);
         } else {
+            await startTrackingInTabWithRetry(tabId, tab.url || existingNode?.url || '');
             // Already a root node: refresh naming immediately.
             triggerAutoNaming(existingNodeId, { force: true, source: 'track_existing_root' }).catch(() => { });
             return;
@@ -1068,7 +1488,10 @@ async function generateTitleFromOpenAICompatible(text, apiKey, model, baseUrl) {
         body: JSON.stringify({
             model: model || 'gpt-3.5-turbo',
             messages: [
-                { role: "system", content: "Summarize the user's question into a concise title (max 15 characters). Ignore AI responses. Return ONLY the title, no quotes." },
+                {
+                    role: "system",
+                    content: "Create a concise branch title (max 15 characters) for the MOST RECENT conversation turn. Prioritize the latest assistant response; if unavailable, use the latest user request. Use older context only to disambiguate. Return ONLY the title, no quotes."
+                },
                 { role: "user", content: text }
             ],
             max_tokens: 30

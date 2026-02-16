@@ -90,7 +90,7 @@ body {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 12px 14px;
+  padding: 10px 12px;
   border-bottom: 1px solid var(--border);
   background: var(--bg-secondary);
   position: sticky;
@@ -98,22 +98,50 @@ body {
   z-index: 100;
 }
 
-.header-title {
+.header-ornament {
+  position: relative;
+  width: 112px;
+  height: 22px;
+  flex-shrink: 0;
+  opacity: 0.7;
+  pointer-events: none;
+}
+
+.header-ornament::before,
+.header-ornament::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+}
+
+.header-ornament::before {
+  background:
+    radial-gradient(circle at 8% 50%, var(--accent) 0 2px, transparent 3px),
+    radial-gradient(circle at 42% 20%, var(--text-muted) 0 2px, transparent 3px),
+    radial-gradient(circle at 42% 80%, var(--text-muted) 0 2px, transparent 3px),
+    radial-gradient(circle at 82% 50%, rgba(124, 111, 247, 0.9) 0 2px, transparent 3px),
+    linear-gradient(var(--border), var(--border)) 12% 50%/26% 1px no-repeat,
+    linear-gradient(var(--border), var(--border)) 48% 25%/28% 1px no-repeat,
+    linear-gradient(var(--border), var(--border)) 48% 75%/28% 1px no-repeat;
+}
+
+.header-ornament::after {
+  background:
+    linear-gradient(90deg, transparent 0%, var(--bg-secondary) 70%, var(--bg-secondary) 100%);
+}
+
+.header-actions {
   display: flex;
   align-items: center;
   gap: 8px;
+  margin-left: 12px;
 }
 
-.header-icon {
-  width: 20px;
-  height: 20px;
-  color: var(--accent);
-}
-
-.header h1 {
-  font-size: 14px;
-  font-weight: 600;
-  letter-spacing: -0.01em;
+@media (max-width: 360px) {
+  .header-ornament {
+    width: 72px;
+    opacity: 0.55;
+  }
 }
 
 /* ── Buttons ── */
@@ -289,12 +317,7 @@ body {
 
 .node-label .page-title {
   color: var(--text-secondary);
-  font-size: 11.5px;
-}
-
-.node-label .custom-label+.page-title::before {
-  content: ' — ';
-  color: var(--text-muted);
+  font-size: 12.5px;
 }
 
 /* Node actions (visible on hover) */

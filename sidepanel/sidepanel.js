@@ -481,7 +481,7 @@ function createNodeElement(node) {
     label.className = 'node-label';
     const effectiveLabel = displayLabel || node.autoLabel || '';
     if (effectiveLabel) {
-        label.innerHTML = `<span class="custom-label">${escapeHtml(effectiveLabel)}</span><span class="page-title">${escapeHtml(truncate(displayTitle, 40))}</span>`;
+        label.innerHTML = `<span class="custom-label">${escapeHtml(truncate(effectiveLabel, 56))}</span>`;
     } else {
         label.innerHTML = `<span class="page-title">${escapeHtml(truncate(displayTitle, 50))}</span>`;
     }
