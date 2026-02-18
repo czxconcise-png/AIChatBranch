@@ -851,22 +851,44 @@ function looksLikeUserPromptText(text) {
     return false;
 }
 
+function looksLikeAssistantResponseText(text) {
+    if (!text) return false;
+    const cleaned = sanitizeTurnChunk(text, 16_000);
+    if (!cleaned) return false;
+    if (looksLikeUserPromptText(cleaned)) return false;
+    if (cleaned.length >= 32) return true;
+    if (cleaned.includes('\n')) return true;
+    if (/[。！？.!?]$/.test(cleaned) && cleaned.length >= 4) return true;
+    return false;
+}
+
 function buildSegmentedNamingText(text) {
     const cleaned = sanitizeTurnChunk(text, 20_000);
     if (!cleaned) return '';
     if (cleaned.length <= AUTO_NAME_MAX_CHARS) return cleaned;
 
-    const head = cleaned.slice(0, AUTO_NAME_SEGMENT_HEAD_CHARS);
-    const middleStart = Math.max(0, Math.floor((cleaned.length - AUTO_NAME_SEGMENT_MIDDLE_CHARS) / 2));
-    const middle = cleaned.slice(middleStart, middleStart + AUTO_NAME_SEGMENT_MIDDLE_CHARS);
-    const tail = cleaned.slice(-AUTO_NAME_SEGMENT_TAIL_CHARS);
+    const separator = '\n\n';
+    const separatorChars = separator.length * 2;
+    const middleBudget = Math.max(
+        0,
+        AUTO_NAME_MAX_CHARS - AUTO_NAME_SEGMENT_HEAD_CHARS - AUTO_NAME_SEGMENT_TAIL_CHARS - separatorChars
+    );
 
-    return sanitizeTurnChunk(`${head}\n\n${middle}\n\n${tail}`, AUTO_NAME_MAX_CHARS + 400);
+    const head = cleaned.slice(0, AUTO_NAME_SEGMENT_HEAD_CHARS);
+    const middleStart = Math.max(0, Math.floor((cleaned.length - middleBudget) / 2));
+    const middle = cleaned.slice(middleStart, middleStart + middleBudget);
+    const tail = cleaned.slice(-AUTO_NAME_SEGMENT_TAIL_CHARS);
+    const combined = `${head}${separator}${middle}${separator}${tail}`;
+
+    return sanitizeTurnChunk(combined, AUTO_NAME_MAX_CHARS);
 }
 
 function extractLatestAssistantReply(fullText, incrementalText) {
     const incremental = sanitizeTurnChunk(incrementalText, 16_000);
-    if (incremental.length >= AUTO_NAME_MIN_INCREMENTAL_TEXT) {
+    if (
+        incremental.length >= AUTO_NAME_MIN_INCREMENTAL_TEXT
+        && looksLikeAssistantResponseText(incremental)
+    ) {
         return buildSegmentedNamingText(incremental);
     }
 
@@ -878,13 +900,20 @@ function extractLatestAssistantReply(fullText, incrementalText) {
     for (let i = paragraphs.length - 1; i >= 0; i -= 1) {
         const paragraph = paragraphs[i];
         if (!paragraph) continue;
-        if (collected.length > 0 && looksLikeUserPromptText(paragraph)) {
+        const isUserPrompt = looksLikeUserPromptText(paragraph);
+        if (collected.length === 0 && isUserPrompt) {
+            // Skip trailing user prompt blocks; try to find the latest assistant block before it.
+            continue;
+        }
+        if (collected.length > 0 && isUserPrompt) {
             break;
         }
         collected.unshift(paragraph);
         totalChars += paragraph.length;
         if (totalChars >= AUTO_NAME_MAX_CHARS * 2) break;
     }
+
+    if (collected.length === 0) return '';
 
     return buildSegmentedNamingText(collected.join('\n\n'));
 }
@@ -1270,8 +1299,9 @@ async function handleSnapshotData(tabId, data, reason) {
         .join('\n');
 
     const hasMeaningfulDelta = newlyAddedText.length >= AUTO_NAME_MIN_INCREMENTAL_TEXT;
+    const hasAssistantLikeDelta = hasMeaningfulDelta && looksLikeAssistantResponseText(newlyAddedText);
     const hasInitialText = (data.text || '').trim().length >= AUTO_NAME_MIN_FULL_TEXT;
-    const shouldQueue = hasMeaningfulDelta || (!node.autoLabel && hasInitialText) || reason === 'initial';
+    const shouldQueue = hasAssistantLikeDelta || (!node.autoLabel && hasInitialText) || reason === 'initial';
 
     if (shouldQueue) {
         queueAutoNaming(
