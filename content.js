@@ -88,20 +88,41 @@ function isVisibleElement(el) {
     return rect.width > 0 && rect.height > 0;
 }
 
+function isScrollableElement(el) {
+    if (!el) return false;
+    const style = window.getComputedStyle(el);
+    const overflowY = style.overflowY;
+    if (!(overflowY === 'auto' || overflowY === 'scroll' || overflowY === 'overlay')) return false;
+    return el.scrollHeight > el.clientHeight + 12;
+}
+
 function getScrollableAncestors(el) {
     const ancestors = [];
     let current = el ? el.parentElement : null;
     while (current) {
-        const style = window.getComputedStyle(current);
-        const overflowY = style.overflowY;
-        const canScroll = (overflowY === 'auto' || overflowY === 'scroll' || overflowY === 'overlay')
-            && current.scrollHeight > current.clientHeight + 8;
-        if (canScroll) {
+        if (isScrollableElement(current)) {
             ancestors.push(current);
         }
         current = current.parentElement;
     }
     return ancestors;
+}
+
+function getConversationRoot() {
+    return document.querySelector('[role="main"]') || document.querySelector('main') || document.body;
+}
+
+function scrollToConversationBottom() {
+    const root = getConversationRoot();
+    const candidates = [root, ...getScrollableAncestors(root)].filter(Boolean);
+    const unique = Array.from(new Set(candidates));
+    unique.forEach((el) => {
+        if (isScrollableElement(el)) {
+            el.scrollTop = el.scrollHeight;
+        }
+    });
+    const scrollingEl = document.scrollingElement || document.documentElement || document.body;
+    scrollingEl.scrollTop = scrollingEl.scrollHeight;
 }
 
 function findLatestConversationAnchor() {
@@ -149,6 +170,9 @@ function findLatestConversationAnchor() {
 }
 
 function scrollToLatestTurnStart() {
+    // Bring latest messages into DOM/viewport first.
+    scrollToConversationBottom();
+
     const target = findLatestConversationAnchor();
     if (!target) return false;
     const offset = 84; // leave space for sticky headers/toolbars
@@ -312,6 +336,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         if (message.type === 'SCROLL_TO_LATEST_TURN') {
             const first = scrollToLatestTurnStart();
             setTimeout(() => { scrollToLatestTurnStart(); }, 300);
+            setTimeout(() => { scrollToLatestTurnStart(); }, 900);
             sendResponse({ success: first });
             return false;
         }

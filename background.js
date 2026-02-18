@@ -111,7 +111,6 @@ async function createRootNode(tab) {
 
     // Notify side panel to refresh
     broadcastToSidePanel({ type: 'TREE_UPDATED' });
-    scheduleInitialAutoNaming(nodeId);
 
     console.log('[AI Tree] Root node created:', nodeId, 'for tab', tab.id);
     return node;
@@ -143,28 +142,8 @@ async function createChildNode(tab, parentTabId) {
     await startTrackingInTabWithRetry(tab.id, tab.url || '');
 
     broadcastToSidePanel({ type: 'TREE_UPDATED' });
-    scheduleInitialAutoNaming(nodeId);
     console.log('[AI Tree] Child node created:', nodeId, 'parent:', parentNodeId);
     return node;
-}
-
-function scheduleInitialAutoNaming(nodeId) {
-    // First attempt quickly, second attempt as a reliability fallback.
-    const delays = [1200, 5000];
-    delays.forEach((delayMs) => {
-        setTimeout(async () => {
-            try {
-                const node = await TreeStorage.getNode(nodeId);
-                if (!node) return;
-                const response = await getContentWithInjectionFallback(node.tabId, node.url || '');
-                const fullText = (response && response.text ? response.text : '').trim();
-                if (fullText.length < AUTO_NAME_MIN_FULL_TEXT) return;
-                queueAutoNaming(nodeId, { fullText: fullText, incrementalText: '' }, { immediate: true });
-            } catch (e) {
-                console.warn('[AI Tree] Initial auto-naming scheduling failed:', e.message);
-            }
-        }, delayMs);
-    });
 }
 
 function canInjectContentScript(url) {
@@ -696,6 +675,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                     setTimeout(() => {
                         scrollToLatestTurnInTab(tab.id, tab.url).catch(() => { });
                     }, 450);
+                    setTimeout(() => {
+                        scrollToLatestTurnInTab(tab.id, tab.url).catch(() => { });
+                    }, 1200);
                 }
             } catch {
                 // Ignore, tab switch itself already succeeded.
@@ -1330,7 +1312,8 @@ async function handleSnapshotData(tabId, data, reason) {
     const hasMeaningfulDelta = newlyAddedText.length >= AUTO_NAME_MIN_INCREMENTAL_TEXT;
     const hasAssistantLikeDelta = hasMeaningfulDelta && looksLikeAssistantResponseText(newlyAddedText);
     const hasInitialText = (data.text || '').trim().length >= AUTO_NAME_MIN_FULL_TEXT;
-    const shouldQueue = hasAssistantLikeDelta || (!node.autoLabel && hasInitialText) || reason === 'initial';
+    const hasAssistantLikeFullText = hasInitialText && looksLikeAssistantResponseText(data.text || '');
+    const shouldQueue = hasAssistantLikeDelta || (!node.autoLabel && hasAssistantLikeFullText);
 
     if (shouldQueue) {
         queueAutoNaming(
@@ -1339,7 +1322,7 @@ async function handleSnapshotData(tabId, data, reason) {
                 fullText: data.text || '',
                 incrementalText: newlyAddedText,
             },
-            { immediate: reason === 'initial' }
+            { immediate: false }
         );
     }
 
