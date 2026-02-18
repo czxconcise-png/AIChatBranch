@@ -28,11 +28,17 @@ const SILICONFLOW_MODELS = [
 ];
 const modelCooldowns = new Map(); // modelId → timestamp when cooldown expires
 const MODEL_COOLDOWN_MS = 60_000; // 60 seconds
-const AI_NAMING_TIMEOUT_MS = 8_000; // 8 seconds timeout, then local fallback
+const AI_NAMING_TIMEOUT_MS = 20_000; // 20 seconds timeout, then local fallback
 const AUTO_NAME_MIN_INCREMENTAL_TEXT = 12;
 const AUTO_NAME_MIN_FULL_TEXT = 80;
-const AUTO_NAME_CONTEXT_TAIL_MAX_CHARS = 2500;
-const AUTO_NAME_LATEST_CHUNK_MAX_CHARS = 1200;
+const AUTO_NAME_MAX_CHARS = 3000;
+const AUTO_NAME_SEGMENT_HEAD_CHARS = 900;
+const AUTO_NAME_SEGMENT_MIDDLE_CHARS = 1200;
+const AUTO_NAME_SEGMENT_TAIL_CHARS = 900;
+const AUTO_NAME_STABLE_WINDOW_MS = 2_000;
+const AUTO_NAME_RECHECK_MS = 600;
+const AUTO_NAME_WAIT_MAX_MS = 60_000;
+const AUTO_NAME_MIN_RENAME_INTERVAL_MS = 10_000;
 const RECENT_ACTIVATION_WINDOW_MS = 12_000;
 const TAB_OPEN_RESOLVE_WINDOW_MS = 2_500;
 const PARENT_CONFIDENCE_THRESHOLD = 0.70;
@@ -43,6 +49,8 @@ const tabToNode = new Map();
 const tabCreationMeta = new Map(); // tabId -> { initialWasBlank, openedAt, windowId, openerTabId }
 const tabTrackingLocks = new Set(); // tabIds currently being auto-tracked
 const namingInFlight = new Map(); // nodeId -> Promise<string>
+const namingCycles = new Map(); // nodeId -> { startedAt, lastContentAt, stableTimer, hardTimer, pendingPayload, running }
+const lastAutoNamedAt = new Map(); // nodeId -> timestamp
 const recentWindowContext = new Map(); // windowId -> { lastActivatedTabId, lastActivatedAt, lastTrackedTabId, lastTrackedNodeId, lastTrackedUrl, lastTrackedAt }
 
 // Generate unique IDs
@@ -144,10 +152,17 @@ function scheduleInitialAutoNaming(nodeId) {
     // First attempt quickly, second attempt as a reliability fallback.
     const delays = [1200, 5000];
     delays.forEach((delayMs) => {
-        setTimeout(() => {
-            triggerAutoNaming(nodeId, { force: true, source: 'track_initial' }).catch((e) => {
-                console.warn('[AI Tree] Initial auto-naming failed:', e.message);
-            });
+        setTimeout(async () => {
+            try {
+                const node = await TreeStorage.getNode(nodeId);
+                if (!node) return;
+                const response = await getContentWithInjectionFallback(node.tabId, node.url || '');
+                const fullText = (response && response.text ? response.text : '').trim();
+                if (fullText.length < AUTO_NAME_MIN_FULL_TEXT) return;
+                queueAutoNaming(nodeId, { fullText: fullText, incrementalText: '' }, { immediate: true });
+            } catch (e) {
+                console.warn('[AI Tree] Initial auto-naming scheduling failed:', e.message);
+            }
         }, delayMs);
     });
 }
@@ -615,6 +630,8 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
     }
 
     tabToNode.delete(tabId);
+    clearNamingCycle(nodeId);
+    lastAutoNamedAt.delete(nodeId);
     broadcastToSidePanel({ type: 'TREE_UPDATED' });
     console.log('[AI Tree] Tab closed, node marked closed:', nodeId);
 });
@@ -799,7 +816,7 @@ function normalizeNamingText(rawText) {
     return rawText.replace(/\r/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
 }
 
-function sanitizeTurnChunk(rawText, maxChars = AUTO_NAME_LATEST_CHUNK_MAX_CHARS) {
+function sanitizeTurnChunk(rawText, maxChars = AUTO_NAME_MAX_CHARS) {
     const normalized = normalizeNamingText(rawText);
     if (!normalized) return '';
     const cleaned = normalized
@@ -819,7 +836,7 @@ function splitMeaningfulParagraphs(rawText) {
 
     return normalized
         .split(/\n{2,}/)
-        .map((paragraph) => sanitizeTurnChunk(paragraph, AUTO_NAME_LATEST_CHUNK_MAX_CHARS))
+        .map((paragraph) => sanitizeTurnChunk(paragraph, AUTO_NAME_MAX_CHARS))
         .filter((paragraph) => paragraph.length > 0);
 }
 
@@ -834,72 +851,42 @@ function looksLikeUserPromptText(text) {
     return false;
 }
 
-function chooseLatestAssistantChunk(paragraphs) {
-    if (!paragraphs || paragraphs.length === 0) return '';
+function buildSegmentedNamingText(text) {
+    const cleaned = sanitizeTurnChunk(text, 20_000);
+    if (!cleaned) return '';
+    if (cleaned.length <= AUTO_NAME_MAX_CHARS) return cleaned;
+
+    const head = cleaned.slice(0, AUTO_NAME_SEGMENT_HEAD_CHARS);
+    const middleStart = Math.max(0, Math.floor((cleaned.length - AUTO_NAME_SEGMENT_MIDDLE_CHARS) / 2));
+    const middle = cleaned.slice(middleStart, middleStart + AUTO_NAME_SEGMENT_MIDDLE_CHARS);
+    const tail = cleaned.slice(-AUTO_NAME_SEGMENT_TAIL_CHARS);
+
+    return sanitizeTurnChunk(`${head}\n\n${middle}\n\n${tail}`, AUTO_NAME_MAX_CHARS + 400);
+}
+
+function extractLatestAssistantReply(fullText, incrementalText) {
+    const incremental = sanitizeTurnChunk(incrementalText, 16_000);
+    if (incremental.length >= AUTO_NAME_MIN_INCREMENTAL_TEXT) {
+        return buildSegmentedNamingText(incremental);
+    }
+
+    const paragraphs = splitMeaningfulParagraphs(fullText);
+    if (paragraphs.length === 0) return '';
+
+    const collected = [];
+    let totalChars = 0;
     for (let i = paragraphs.length - 1; i >= 0; i -= 1) {
         const paragraph = paragraphs[i];
-        // Prefer the freshest non-trivial paragraph instead of jumping too far back.
-        if (paragraph.length >= 8) return paragraph;
-    }
-    return paragraphs[paragraphs.length - 1];
-}
-
-function chooseLatestUserChunk(paragraphs, assistantChunk) {
-    if (!paragraphs || paragraphs.length === 0) return '';
-
-    const assistantIndex = assistantChunk ? paragraphs.lastIndexOf(assistantChunk) : paragraphs.length - 1;
-    for (let i = assistantIndex - 1; i >= 0; i -= 1) {
-        const candidate = paragraphs[i];
-        if (looksLikeUserPromptText(candidate)) return candidate;
-    }
-    for (let i = assistantIndex - 1; i >= 0; i -= 1) {
-        const candidate = paragraphs[i];
-        if (candidate.length <= 220) return candidate;
-    }
-    return '';
-}
-
-function extractLatestTurnForNaming(fullText, incrementalText) {
-    const incrementalParagraphs = splitMeaningfulParagraphs(incrementalText);
-    const fullParagraphs = splitMeaningfulParagraphs(fullText);
-    const sourceParagraphs = incrementalParagraphs.length > 0 ? incrementalParagraphs : fullParagraphs;
-
-    let latestAssistantChunk = chooseLatestAssistantChunk(sourceParagraphs);
-    let latestUserChunk = chooseLatestUserChunk(sourceParagraphs, latestAssistantChunk);
-
-    if (!latestAssistantChunk && fullParagraphs.length > 0) {
-        latestAssistantChunk = chooseLatestAssistantChunk(fullParagraphs);
-    }
-    if (!latestUserChunk && fullParagraphs.length > 0) {
-        latestUserChunk = chooseLatestUserChunk(fullParagraphs, latestAssistantChunk);
+        if (!paragraph) continue;
+        if (collected.length > 0 && looksLikeUserPromptText(paragraph)) {
+            break;
+        }
+        collected.unshift(paragraph);
+        totalChars += paragraph.length;
+        if (totalChars >= AUTO_NAME_MAX_CHARS * 2) break;
     }
 
-    const contextSource = fullParagraphs.length > 0 ? fullParagraphs : incrementalParagraphs;
-    const contextTail = contextSource
-        .slice(-6)
-        .join('\n\n')
-        .slice(-AUTO_NAME_CONTEXT_TAIL_MAX_CHARS)
-        .trim();
-
-    return {
-        latestAssistantChunk: sanitizeTurnChunk(latestAssistantChunk, AUTO_NAME_LATEST_CHUNK_MAX_CHARS),
-        latestUserChunk: sanitizeTurnChunk(latestUserChunk, AUTO_NAME_LATEST_CHUNK_MAX_CHARS),
-        contextTail: sanitizeTurnChunk(contextTail, AUTO_NAME_CONTEXT_TAIL_MAX_CHARS),
-    };
-}
-
-function buildLatestFocusedPrompt(latestTurn) {
-    const sections = [];
-    if (latestTurn.latestAssistantChunk) {
-        sections.push(`Latest assistant response:\n${latestTurn.latestAssistantChunk}`);
-    }
-    if (latestTurn.latestUserChunk) {
-        sections.push(`Latest user request:\n${latestTurn.latestUserChunk}`);
-    }
-    if (latestTurn.contextTail) {
-        sections.push(`Recent conversation context:\n${latestTurn.contextTail}`);
-    }
-    return sections.join('\n\n').slice(-5000);
+    return buildSegmentedNamingText(collected.join('\n\n'));
 }
 
 function extractLabelFromTailText(text) {
@@ -933,12 +920,10 @@ function extractLabelFromTailText(text) {
     return candidate;
 }
 
-function deriveLatestLocalAutoLabel(latestTurn, incrementalText, fullText, fallbackTitle) {
+function deriveLatestLocalAutoLabel(latestAssistantText, incrementalText, fullText, fallbackTitle) {
     const orderedSources = [
-        latestTurn.latestAssistantChunk,
-        latestTurn.latestUserChunk,
+        latestAssistantText,
         incrementalText,
-        latestTurn.contextTail,
     ];
 
     for (const source of orderedSources) {
@@ -1027,30 +1012,21 @@ async function runAutoNaming(nodeId, options = {}) {
 
     try {
         const namingText = await collectNamingText(node, options);
-        let fullText = namingText.fullText;
+        const fullText = namingText.fullText;
         const incrementalText = namingText.incrementalText;
-        const shouldUseIncremental = incrementalText.length >= AUTO_NAME_MIN_INCREMENTAL_TEXT;
         const needsInitialNaming = !node.autoLabel && fullText.length >= AUTO_NAME_MIN_FULL_TEXT;
-        const latestTurn = extractLatestTurnForNaming(fullText, incrementalText);
-        const latestPromptText = buildLatestFocusedPrompt(latestTurn);
+        const latestAssistantText = extractLatestAssistantReply(fullText, incrementalText);
+        const promptText = latestAssistantText;
 
-        if (!options.force && !shouldUseIncremental && !needsInitialNaming) {
+        if (!options.force && !latestAssistantText && !needsInitialNaming) {
             return '';
         }
 
         let label = '';
         const hasConversationText = !!fullText;
-        if (!hasConversationText) {
-            label = deriveLatestLocalAutoLabel(latestTurn, incrementalText, '', node.title || '');
-            if (!label) return '';
-        } else {
+        if (hasConversationText && promptText) {
             const settings = await chrome.storage.local.get(['aiNamingType', 'aiApiUrl', 'aiApiKey', 'aiModel']);
             const namingType = settings.aiNamingType || 'builtin';
-            const promptText = latestPromptText || (
-                shouldUseIncremental
-                    ? `${fullText}\n${incrementalText}`.slice(-5000)
-                    : fullText.slice(-5000)
-            );
 
             if (namingType === 'builtin') {
                 try {
@@ -1078,11 +1054,12 @@ async function runAutoNaming(nodeId, options = {}) {
 
         label = sanitizeGeneratedLabel(label);
         if (!label) {
-            label = deriveLatestLocalAutoLabel(latestTurn, incrementalText, fullText, node.title || '');
+            label = deriveLatestLocalAutoLabel(latestAssistantText, incrementalText, fullText, node.title || '');
         }
 
         if (!label) {
-            return '';
+            label = sanitizeGeneratedLabel(node.autoLabel || node.title || 'Untitled branch');
+            if (!label) return '';
         }
 
         const latestNode = await TreeStorage.getNode(nodeId);
@@ -1093,11 +1070,6 @@ async function runAutoNaming(nodeId, options = {}) {
         let changed = false;
         if (latestNode.autoLabel !== label) {
             latestNode.autoLabel = label;
-            changed = true;
-        }
-        // Product decision: AI auto-name can overwrite manual label.
-        if (latestNode.label) {
-            latestNode.label = '';
             changed = true;
         }
         if (latestNode.namingStatus) {
@@ -1133,6 +1105,129 @@ function triggerAutoNaming(nodeId, options = {}) {
 
     namingInFlight.set(nodeId, task);
     return task;
+}
+
+function clearNamingCycle(nodeId) {
+    const cycle = namingCycles.get(nodeId);
+    if (!cycle) return;
+    if (cycle.stableTimer) clearTimeout(cycle.stableTimer);
+    if (cycle.hardTimer) clearTimeout(cycle.hardTimer);
+    namingCycles.delete(nodeId);
+}
+
+function mergeNamingPayload(previousPayload, incomingPayload) {
+    const prev = previousPayload || { fullText: '', incrementalText: '' };
+    const inc = incomingPayload || {};
+    const mergedIncremental = [prev.incrementalText || '', inc.incrementalText || '']
+        .filter(Boolean)
+        .join('\n')
+        .slice(-16_000)
+        .trim();
+
+    return {
+        fullText: (inc.fullText || prev.fullText || '').trim(),
+        incrementalText: mergedIncremental,
+    };
+}
+
+async function attemptStableAutoNaming(nodeId, source = 'stable') {
+    const cycle = namingCycles.get(nodeId);
+    if (!cycle) return;
+    const now = Date.now();
+
+    if (now - cycle.lastContentAt < AUTO_NAME_STABLE_WINDOW_MS) {
+        if (cycle.stableTimer) clearTimeout(cycle.stableTimer);
+        cycle.stableTimer = setTimeout(() => {
+            attemptStableAutoNaming(nodeId, 'recheck').catch(() => { });
+        }, AUTO_NAME_RECHECK_MS);
+        namingCycles.set(nodeId, cycle);
+        return;
+    }
+
+    const lastNamedAt = lastAutoNamedAt.get(nodeId) || 0;
+    if (source !== 'deadline' && now - lastNamedAt < AUTO_NAME_MIN_RENAME_INTERVAL_MS) {
+        if (cycle.stableTimer) clearTimeout(cycle.stableTimer);
+        const waitMs = AUTO_NAME_MIN_RENAME_INTERVAL_MS - (now - lastNamedAt);
+        cycle.stableTimer = setTimeout(() => {
+            attemptStableAutoNaming(nodeId, 'interval_recheck').catch(() => { });
+        }, Math.max(waitMs, AUTO_NAME_RECHECK_MS));
+        namingCycles.set(nodeId, cycle);
+        return;
+    }
+
+    if (cycle.running) return;
+    cycle.running = true;
+    const triggerStartedAt = now;
+    namingCycles.set(nodeId, cycle);
+
+    const payload = cycle.pendingPayload || { fullText: '', incrementalText: '' };
+    await triggerAutoNaming(nodeId, {
+        force: true,
+        fullText: payload.fullText || '',
+        incrementalText: payload.incrementalText || '',
+        source: `snapshot:${source}`,
+    });
+    lastAutoNamedAt.set(nodeId, Date.now());
+
+    const latestCycle = namingCycles.get(nodeId);
+    if (!latestCycle) return;
+    latestCycle.running = false;
+    if (latestCycle.lastContentAt > triggerStartedAt) {
+        if (latestCycle.stableTimer) clearTimeout(latestCycle.stableTimer);
+        latestCycle.stableTimer = setTimeout(() => {
+            attemptStableAutoNaming(nodeId, 'post_update').catch(() => { });
+        }, AUTO_NAME_STABLE_WINDOW_MS);
+        namingCycles.set(nodeId, latestCycle);
+        return;
+    }
+
+    clearNamingCycle(nodeId);
+}
+
+function queueAutoNaming(nodeId, payload, options = {}) {
+    if (!nodeId) return;
+    const now = Date.now();
+    const existing = namingCycles.get(nodeId);
+    const mergedPayload = mergeNamingPayload(existing ? existing.pendingPayload : null, payload);
+
+    if (!existing) {
+        const cycle = {
+            startedAt: now,
+            lastContentAt: now,
+            stableTimer: null,
+            hardTimer: setTimeout(() => {
+                attemptStableAutoNaming(nodeId, 'deadline').catch(() => {
+                    clearNamingCycle(nodeId);
+                });
+            }, AUTO_NAME_WAIT_MAX_MS),
+            pendingPayload: mergedPayload,
+            running: false,
+        };
+        namingCycles.set(nodeId, cycle);
+        setNodeNamingStatus(nodeId, 'pending').catch(() => { });
+    } else {
+        existing.lastContentAt = now;
+        existing.pendingPayload = mergedPayload;
+        if (!existing.hardTimer) {
+            const elapsed = now - existing.startedAt;
+            const waitLeft = Math.max(AUTO_NAME_WAIT_MAX_MS - elapsed, AUTO_NAME_RECHECK_MS);
+            existing.hardTimer = setTimeout(() => {
+                attemptStableAutoNaming(nodeId, 'deadline').catch(() => {
+                    clearNamingCycle(nodeId);
+                });
+            }, waitLeft);
+        }
+        namingCycles.set(nodeId, existing);
+    }
+
+    const cycle = namingCycles.get(nodeId);
+    if (!cycle) return;
+    if (cycle.stableTimer) clearTimeout(cycle.stableTimer);
+    const delay = options.immediate ? AUTO_NAME_RECHECK_MS : AUTO_NAME_STABLE_WINDOW_MS;
+    cycle.stableTimer = setTimeout(() => {
+        attemptStableAutoNaming(nodeId, 'stable').catch(() => { });
+    }, delay);
+    namingCycles.set(nodeId, cycle);
 }
 
 async function handleSnapshotData(tabId, data, reason) {
@@ -1176,17 +1271,17 @@ async function handleSnapshotData(tabId, data, reason) {
 
     const hasMeaningfulDelta = newlyAddedText.length >= AUTO_NAME_MIN_INCREMENTAL_TEXT;
     const hasInitialText = (data.text || '').trim().length >= AUTO_NAME_MIN_FULL_TEXT;
-    const shouldTrigger = hasMeaningfulDelta || (!node.autoLabel && hasInitialText) || reason === 'initial';
+    const shouldQueue = hasMeaningfulDelta || (!node.autoLabel && hasInitialText) || reason === 'initial';
 
-    if (shouldTrigger) {
-        triggerAutoNaming(nodeId, {
-            force: reason === 'initial',
-            fullText: data.text || '',
-            incrementalText: newlyAddedText,
-            source: `snapshot:${reason}`,
-        }).catch(() => {
-            // Errors are logged inside triggerAutoNaming.
-        });
+    if (shouldQueue) {
+        queueAutoNaming(
+            nodeId,
+            {
+                fullText: data.text || '',
+                incrementalText: newlyAddedText,
+            },
+            { immediate: reason === 'initial' }
+        );
     }
 
     console.log('[AI Tree] Snapshot saved for node', nodeId, 'reason:', reason);
@@ -1319,12 +1414,26 @@ async function handleStartTracking(tabId) {
         // Only re-create as root if it was auto-created as a child
         if (existingNode && existingNode.parentId) {
             tabToNode.delete(tabId);
+            namingInFlight.delete(existingNodeId);
+            clearNamingCycle(existingNodeId);
+            lastAutoNamedAt.delete(existingNodeId);
             // Clean up the auto-created child node
             await TreeStorage.deleteNode(existingNodeId);
         } else {
             await startTrackingInTabWithRetry(tabId, tab.url || existingNode?.url || '');
-            // Already a root node: refresh naming immediately.
-            triggerAutoNaming(existingNodeId, { force: true, source: 'track_existing_root' }).catch(() => { });
+            // Already a root node: refresh naming via stable scheduling.
+            try {
+                const response = await getContentWithInjectionFallback(tabId, tab.url || existingNode?.url || '');
+                const fullText = (response && response.text ? response.text : '').trim();
+                if (fullText.length >= AUTO_NAME_MIN_FULL_TEXT) {
+                    queueAutoNaming(existingNodeId, {
+                        fullText: fullText,
+                        incrementalText: '',
+                    }, { immediate: true });
+                }
+            } catch {
+                // Best effort.
+            }
             return;
         }
     }
@@ -1363,6 +1472,8 @@ async function handleDeleteNode(nodeId, withChildren) {
         for (const id of toDelete) {
             const node = allNodes.find(n => n.id === id);
             namingInFlight.delete(id);
+            clearNamingCycle(id);
+            lastAutoNamedAt.delete(id);
             if (node && node.status === 'live') {
                 tabToNode.delete(node.tabId);
                 try { await chrome.tabs.remove(node.tabId); } catch { /* tab may not exist */ }
@@ -1386,6 +1497,8 @@ async function handleDeleteNode(nodeId, withChildren) {
         }
 
         namingInFlight.delete(nodeId);
+        clearNamingCycle(nodeId);
+        lastAutoNamedAt.delete(nodeId);
         await TreeStorage.deleteNode(nodeId);
         await TreeStorage.deleteSnapshot(nodeId);
     }
@@ -1490,7 +1603,7 @@ async function generateTitleFromOpenAICompatible(text, apiKey, model, baseUrl) {
             messages: [
                 {
                     role: "system",
-                    content: "Create a concise branch title (max 15 characters) for the MOST RECENT conversation turn. Prioritize the latest assistant response; if unavailable, use the latest user request. Use older context only to disambiguate. Return ONLY the title, no quotes."
+                    content: "Create a concise branch title (max 15 characters) from the latest assistant response text provided by the user. Focus on the core topic and return ONLY the title, no quotes."
                 },
                 { role: "user", content: text }
             ],
