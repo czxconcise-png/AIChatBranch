@@ -71,6 +71,71 @@ function capturePageContent() {
     };
 }
 
+function isProbablyUserPrompt(text) {
+    if (!text) return false;
+    const trimmed = text.trim();
+    if (trimmed.length === 0 || trimmed.length > 320) return false;
+    if (/^[Qq][:\s]/.test(trimmed)) return true;
+    if (/^(You|User|我|用户)[:：\s]/i.test(trimmed)) return true;
+    if (/[?？]$/.test(trimmed)) return true;
+    if (/^(请|帮我|怎么|如何|为什么|what|how|why|can you|please)\b/i.test(trimmed)) return true;
+    return false;
+}
+
+function isVisibleElement(el) {
+    if (!el) return false;
+    const rect = el.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+}
+
+function findLatestConversationAnchor() {
+    const assistantSelectors = [
+        '[data-message-author-role="assistant"]',
+        '[data-testid="assistant-response"]',
+        '[data-role="assistant"]',
+        '.assistant',
+    ];
+
+    for (const selector of assistantSelectors) {
+        const nodes = Array.from(document.querySelectorAll(selector)).filter(isVisibleElement);
+        if (nodes.length > 0) {
+            return nodes[nodes.length - 1];
+        }
+    }
+
+    const genericMessageSelectors = [
+        'main article',
+        '[role="main"] article',
+        '[role="main"] [role="article"]',
+        '[role="main"] .message',
+        '[role="main"] .response',
+    ];
+
+    for (const selector of genericMessageSelectors) {
+        const nodes = Array.from(document.querySelectorAll(selector)).filter(isVisibleElement);
+        if (nodes.length > 0) {
+            for (let i = nodes.length - 1; i >= 0; i -= 1) {
+                const text = (nodes[i].textContent || '').trim();
+                if (text.length >= 16 && !isProbablyUserPrompt(text)) {
+                    return nodes[i];
+                }
+            }
+            return nodes[nodes.length - 1];
+        }
+    }
+
+    return document.querySelector('[role="main"]') || document.querySelector('main') || document.body;
+}
+
+function scrollToLatestTurnStart() {
+    const target = findLatestConversationAnchor();
+    if (!target) return false;
+    const offset = 84; // leave space for sticky headers/toolbars
+    const y = Math.max(0, window.scrollY + target.getBoundingClientRect().top - offset);
+    window.scrollTo({ top: y, behavior: 'auto' });
+    return true;
+}
+
 /**
  * Buffer of recently added text from DOM mutations.
  * Collected by MutationObserver, sent with snapshot, then cleared.
@@ -206,6 +271,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
         if (message.type === 'PING') {
             sendResponse({ success: true, isTracked: isTracked });
+            return false;
+        }
+
+        if (message.type === 'SCROLL_TO_LATEST_TURN') {
+            const first = scrollToLatestTurnStart();
+            setTimeout(() => { scrollToLatestTurnStart(); }, 300);
+            sendResponse({ success: first });
             return false;
         }
     } catch (e) {

@@ -257,6 +257,23 @@ async function getContentWithInjectionFallback(tabId, tabUrl) {
     }
 }
 
+async function scrollToLatestTurnInTab(tabId, tabUrl) {
+    if (!tabId) return false;
+    try {
+        await chrome.tabs.sendMessage(tabId, { type: 'SCROLL_TO_LATEST_TURN' });
+        return true;
+    } catch {
+        const ready = await ensureContentScriptReady(tabId, tabUrl || '');
+        if (!ready) return false;
+        try {
+            await chrome.tabs.sendMessage(tabId, { type: 'SCROLL_TO_LATEST_TURN' });
+            return true;
+        } catch {
+            return false;
+        }
+    }
+}
+
 function normalizeComparableUrl(rawUrl) {
     if (!rawUrl || typeof rawUrl !== 'string') return '';
     try {
@@ -667,10 +684,22 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
 
     if (message.type === 'SWITCH_TO_TAB') {
-        chrome.tabs.update(message.tabId, { active: true }).then(() => {
-            chrome.tabs.get(message.tabId).then((tab) => {
-                chrome.windows.update(tab.windowId, { focused: true });
-            });
+        chrome.tabs.update(message.tabId, { active: true }).then(async () => {
+            try {
+                const tab = await chrome.tabs.get(message.tabId);
+                await chrome.windows.update(tab.windowId, { focused: true });
+
+                // Best effort: move viewport to the latest conversation turn
+                // when switching from side panel.
+                if (tab.url) {
+                    await scrollToLatestTurnInTab(tab.id, tab.url);
+                    setTimeout(() => {
+                        scrollToLatestTurnInTab(tab.id, tab.url).catch(() => { });
+                    }, 450);
+                }
+            } catch {
+                // Ignore, tab switch itself already succeeded.
+            }
             sendResponse({ success: true });
         }).catch((e) => {
             sendResponse({ success: false, error: e.message });
