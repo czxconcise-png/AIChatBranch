@@ -112,20 +112,55 @@ function getConversationRoot() {
     return document.querySelector('[role="main"]') || document.querySelector('main') || document.body;
 }
 
-function scrollToConversationBottom() {
+function getPrimaryConversationScroller() {
     const root = getConversationRoot();
-    const candidates = [root, ...getScrollableAncestors(root)].filter(Boolean);
-    const unique = Array.from(new Set(candidates));
-    unique.forEach((el) => {
-        if (isScrollableElement(el)) {
-            el.scrollTop = el.scrollHeight;
+    const candidates = [root, ...getScrollableAncestors(root)];
+    let best = null;
+    let bestScore = -1;
+    for (const el of candidates) {
+        if (!el || !isScrollableElement(el)) continue;
+        const score = (el.scrollHeight - el.clientHeight) * Math.max(el.clientWidth, 1);
+        if (score > bestScore) {
+            best = el;
+            bestScore = score;
         }
-    });
-    const scrollingEl = document.scrollingElement || document.documentElement || document.body;
-    scrollingEl.scrollTop = scrollingEl.scrollHeight;
+    }
+    return best;
 }
 
-function findLatestConversationAnchor() {
+function scrollContainerToTarget(container, target, offset = 84) {
+    if (!container || !target) return false;
+    const targetRect = target.getBoundingClientRect();
+
+    if (container === window || container === document || container === document.body || container === document.documentElement || container === document.scrollingElement) {
+        const y = Math.max(0, window.scrollY + targetRect.top - offset);
+        window.scrollTo({ top: y, behavior: 'auto' });
+        return true;
+    }
+
+    const containerRect = container.getBoundingClientRect();
+    const desiredTop = container.scrollTop + (targetRect.top - containerRect.top) - 24;
+    container.scrollTop = Math.max(0, desiredTop);
+    return true;
+}
+
+function findLatestTurnStartAnchor() {
+    const userSelectors = [
+        '[data-message-author-role="user"]',
+        '[data-testid*="user"]',
+        '[data-role="user"]',
+        '[data-author="user"]',
+        '[data-sender="user"]',
+        '.user-message',
+    ];
+
+    for (const selector of userSelectors) {
+        const nodes = Array.from(document.querySelectorAll(selector)).filter(isVisibleElement);
+        if (nodes.length > 0) {
+            return nodes[nodes.length - 1];
+        }
+    }
+
     const assistantSelectors = [
         '[data-message-author-role="assistant"]',
         '[data-testid="assistant-response"]',
@@ -156,6 +191,14 @@ function findLatestConversationAnchor() {
     for (const selector of genericMessageSelectors) {
         const nodes = Array.from(document.querySelectorAll(selector)).filter(isVisibleElement);
         if (nodes.length > 0) {
+            // Prefer latest user-like message as the beginning of the latest round.
+            for (let i = nodes.length - 1; i >= 0; i -= 1) {
+                const text = (nodes[i].textContent || '').trim();
+                if (text.length >= 4 && isProbablyUserPrompt(text)) {
+                    return nodes[i];
+                }
+            }
+            // Fallback to assistant-like content near the end.
             for (let i = nodes.length - 1; i >= 0; i -= 1) {
                 const text = (nodes[i].textContent || '').trim();
                 if (text.length >= 16 && !isProbablyUserPrompt(text)) {
@@ -170,29 +213,32 @@ function findLatestConversationAnchor() {
 }
 
 function scrollToLatestTurnStart() {
-    // Bring latest messages into DOM/viewport first.
-    scrollToConversationBottom();
-
-    const target = findLatestConversationAnchor();
+    const target = findLatestTurnStartAnchor();
     if (!target) return false;
-    const offset = 84; // leave space for sticky headers/toolbars
+    const offset = 84;
 
-    // 1) Make sure the target is visible even inside nested scroll containers.
-    target.scrollIntoView({ block: 'start', inline: 'nearest', behavior: 'auto' });
-
-    // 2) Align all scrollable ancestors so target sits near top.
-    const ancestors = getScrollableAncestors(target);
-    for (const container of ancestors) {
-        const containerRect = container.getBoundingClientRect();
-        const targetRect = target.getBoundingClientRect();
-        const desiredTop = container.scrollTop + (targetRect.top - containerRect.top) - 24;
-        container.scrollTop = Math.max(0, desiredTop);
+    // Ensure lazy-loaded/virtualized latest items are materialized.
+    const primaryScroller = getPrimaryConversationScroller();
+    if (primaryScroller && isScrollableElement(primaryScroller)) {
+        primaryScroller.scrollTop = primaryScroller.scrollHeight;
+    } else {
+        const scrollingEl = document.scrollingElement || document.documentElement || document.body;
+        scrollingEl.scrollTop = scrollingEl.scrollHeight;
     }
 
-    // 3) Also adjust main window scroll as a global fallback.
-    const y = Math.max(0, window.scrollY + target.getBoundingClientRect().top - offset);
-    window.scrollTo({ top: y, behavior: 'auto' });
+    target.scrollIntoView({ block: 'start', inline: 'nearest', behavior: 'auto' });
+    if (primaryScroller) {
+        scrollContainerToTarget(primaryScroller, target, offset);
+    }
+    scrollContainerToTarget(document.scrollingElement || document.documentElement || document.body, target, offset);
     return true;
+}
+
+function scheduleLatestTurnScrollAttempts() {
+    const delays = [0, 250, 800, 1600];
+    delays.forEach((delay) => {
+        setTimeout(() => { scrollToLatestTurnStart(); }, delay);
+    });
 }
 
 /**
@@ -335,8 +381,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
         if (message.type === 'SCROLL_TO_LATEST_TURN') {
             const first = scrollToLatestTurnStart();
-            setTimeout(() => { scrollToLatestTurnStart(); }, 300);
-            setTimeout(() => { scrollToLatestTurnStart(); }, 900);
+            scheduleLatestTurnScrollAttempts();
+
+            // Some sites restore their own scroll after focus; run once more when visible.
+            const onVisible = () => {
+                if (document.visibilityState === 'visible') {
+                    scheduleLatestTurnScrollAttempts();
+                }
+                document.removeEventListener('visibilitychange', onVisible);
+            };
+            document.addEventListener('visibilitychange', onVisible);
+
             sendResponse({ success: first });
             return false;
         }
