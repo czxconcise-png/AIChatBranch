@@ -88,11 +88,32 @@ function isVisibleElement(el) {
     return rect.width > 0 && rect.height > 0;
 }
 
+function getScrollableAncestors(el) {
+    const ancestors = [];
+    let current = el ? el.parentElement : null;
+    while (current) {
+        const style = window.getComputedStyle(current);
+        const overflowY = style.overflowY;
+        const canScroll = (overflowY === 'auto' || overflowY === 'scroll' || overflowY === 'overlay')
+            && current.scrollHeight > current.clientHeight + 8;
+        if (canScroll) {
+            ancestors.push(current);
+        }
+        current = current.parentElement;
+    }
+    return ancestors;
+}
+
 function findLatestConversationAnchor() {
     const assistantSelectors = [
         '[data-message-author-role="assistant"]',
         '[data-testid="assistant-response"]',
+        '[data-testid*="assistant"]',
         '[data-role="assistant"]',
+        '[data-author="assistant"]',
+        '[data-sender="assistant"]',
+        '.model-response',
+        '.assistant-message',
         '.assistant',
     ];
 
@@ -131,6 +152,20 @@ function scrollToLatestTurnStart() {
     const target = findLatestConversationAnchor();
     if (!target) return false;
     const offset = 84; // leave space for sticky headers/toolbars
+
+    // 1) Make sure the target is visible even inside nested scroll containers.
+    target.scrollIntoView({ block: 'start', inline: 'nearest', behavior: 'auto' });
+
+    // 2) Align all scrollable ancestors so target sits near top.
+    const ancestors = getScrollableAncestors(target);
+    for (const container of ancestors) {
+        const containerRect = container.getBoundingClientRect();
+        const targetRect = target.getBoundingClientRect();
+        const desiredTop = container.scrollTop + (targetRect.top - containerRect.top) - 24;
+        container.scrollTop = Math.max(0, desiredTop);
+    }
+
+    // 3) Also adjust main window scroll as a global fallback.
     const y = Math.max(0, window.scrollY + target.getBoundingClientRect().top - offset);
     window.scrollTo({ top: y, behavior: 'auto' });
     return true;
