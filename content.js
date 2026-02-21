@@ -1,7 +1,7 @@
 /**
  * content.js — Universal page content capture
  * 
- * Injected into all pages. Responsibilities:
+ * Injected on-demand into granted HTTPS pages. Responsibilities:
  * 1. Respond to CAPTURE_SNAPSHOT messages from background
  * 2. Periodic auto-snapshot every 30 seconds (if tab is tracked)
  * 3. Attempt snapshot on beforeunload

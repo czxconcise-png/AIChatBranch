@@ -42,6 +42,7 @@ const AUTO_NAME_MIN_RENAME_INTERVAL_MS = 10_000;
 const RECENT_ACTIVATION_WINDOW_MS = 12_000;
 const TAB_OPEN_RESOLVE_WINDOW_MS = 2_500;
 const PARENT_CONFIDENCE_THRESHOLD = 0.70;
+const TRACK_START_RETRY_DELAYS_MS = [0, 400, 900];
 
 // ── Tracked state (in-memory mirror, persisted to IndexedDB) ──
 // Map of tabId -> nodeId for quick lookup
@@ -106,9 +107,6 @@ async function createRootNode(tab) {
     await TreeStorage.saveNode(node);
     tabToNode.set(tab.id, nodeId);
 
-    // Ensure tracking is active even for tabs opened before extension reload.
-    await startTrackingInTabWithRetry(tab.id, tab.url || '');
-
     // Notify side panel to refresh
     broadcastToSidePanel({ type: 'TREE_UPDATED' });
 
@@ -138,23 +136,50 @@ async function createChildNode(tab, parentTabId) {
     await TreeStorage.saveNode(node);
     tabToNode.set(tab.id, nodeId);
 
-    // Ensure tracking is active even for tabs opened before extension reload.
-    await startTrackingInTabWithRetry(tab.id, tab.url || '');
-
     broadcastToSidePanel({ type: 'TREE_UPDATED' });
     console.log('[AI Tree] Child node created:', nodeId, 'parent:', parentNodeId);
     return node;
 }
 
+function createRuntimeError(code, message) {
+    const error = new Error(message);
+    error.code = code;
+    return error;
+}
+
+function isSupportedTrackUrl(rawUrl) {
+    if (!rawUrl || typeof rawUrl !== 'string') return false;
+    try {
+        const url = new URL(rawUrl);
+        return url.protocol === 'https:';
+    } catch {
+        return false;
+    }
+}
+
+function getHttpsOriginPattern(rawUrl) {
+    if (!rawUrl || typeof rawUrl !== 'string') return null;
+    try {
+        const url = new URL(rawUrl);
+        if (url.protocol !== 'https:') return null;
+        return `${url.origin}/*`;
+    } catch {
+        return null;
+    }
+}
+
+async function hasSitePermission(rawUrl) {
+    const originPattern = getHttpsOriginPattern(rawUrl);
+    if (!originPattern) return false;
+    try {
+        return await chrome.permissions.contains({ origins: [originPattern] });
+    } catch {
+        return false;
+    }
+}
+
 function canInjectContentScript(url) {
-    if (!url || typeof url !== 'string') return false;
-    return !(
-        url.startsWith('chrome://') ||
-        url.startsWith('chrome-extension://') ||
-        url.startsWith('edge://') ||
-        url.startsWith('devtools://') ||
-        url.startsWith('about:')
-    );
+    return isSupportedTrackUrl(url);
 }
 
 async function ensureContentScriptReady(tabId, tabUrl) {
@@ -167,6 +192,11 @@ async function ensureContentScriptReady(tabId, tabUrl) {
     }
 
     if (!canInjectContentScript(tabUrl)) {
+        return false;
+    }
+
+    const hasPermission = await hasSitePermission(tabUrl);
+    if (!hasPermission) {
         return false;
     }
 
@@ -205,18 +235,18 @@ async function startTrackingInTab(tabId, tabUrl) {
     }
 }
 
-async function startTrackingInTabWithRetry(tabId, tabUrl) {
-    const started = await startTrackingInTab(tabId, tabUrl);
-    if (started) return true;
+function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
-    setTimeout(async () => {
-        try {
-            await startTrackingInTab(tabId, tabUrl);
-        } catch {
-            // Best effort only.
+async function startTrackingInTabUntilReady(tabId, tabUrl) {
+    for (const delay of TRACK_START_RETRY_DELAYS_MS) {
+        if (delay > 0) {
+            await sleep(delay);
         }
-    }, 1000);
-
+        const started = await startTrackingInTab(tabId, tabUrl);
+        if (started) return true;
+    }
     return false;
 }
 
@@ -439,7 +469,18 @@ async function maybeTrackDuplicateFromNavigation(tab, rawUrl) {
     if (!tryAcquireAutoTrackLock(tab.id)) return false;
 
     try {
-        const childTab = { ...tab, url: rawUrl || tab.url || '' };
+        const childUrl = rawUrl || tab.url || '';
+        const hasPermission = await hasSitePermission(childUrl);
+        if (!hasPermission) {
+            return false;
+        }
+        const started = await startTrackingInTabUntilReady(tab.id, childUrl);
+        if (!started) {
+            console.warn('[AI Tree] Duplicate tab tracking skipped (content script unavailable):', tab.id);
+            return false;
+        }
+
+        const childTab = { ...tab, url: childUrl };
         await createChildNode(childTab, tab.openerTabId);
         tabCreationMeta.delete(tab.id);
         return true;
@@ -465,8 +506,19 @@ async function maybeCreateRootNodeFromTrackedUrl(tab, rawUrl) {
         if (!hasTrackedMatch) return false;
 
         const inferredParent = await inferParentTabForManualOpen(tab, normalizedUrl);
+        const targetUrl = rawUrl || tab.url || '';
+        const hasPermission = await hasSitePermission(targetUrl);
+        if (!hasPermission) {
+            return false;
+        }
+        const started = await startTrackingInTabUntilReady(tab.id, targetUrl);
+        if (!started) {
+            console.warn('[AI Tree] Manual same-URL tab tracking skipped (content script unavailable):', tab.id);
+            return false;
+        }
+
         if (inferredParent && inferredParent.tabId && tabToNode.has(inferredParent.tabId)) {
-            const childTab = { ...tab, url: rawUrl || tab.url || '' };
+            const childTab = { ...tab, url: targetUrl };
             await createChildNode(childTab, inferredParent.tabId);
             tabCreationMeta.delete(tab.id);
             console.log(
@@ -482,7 +534,7 @@ async function maybeCreateRootNodeFromTrackedUrl(tab, rawUrl) {
             return true;
         }
 
-        const rootTab = { ...tab, url: rawUrl || tab.url || '' };
+        const rootTab = { ...tab, url: targetUrl };
         await createRootNode(rootTab);
         tabCreationMeta.delete(tab.id);
         console.log('[AI Tree] Same-URL manual tab tracked as root:', tab.id);
@@ -693,7 +745,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         handleStartTracking(message.tabId).then(() => {
             sendResponse({ success: true });
         }).catch((e) => {
-            sendResponse({ success: false, error: e.message });
+            sendResponse({ success: false, error: e.message, code: e && e.code ? e.code : 'UNKNOWN' });
         });
         return true;
     }
@@ -749,7 +801,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         handleForceSnapshot(message.tabId).then(() => {
             sendResponse({ success: true });
         }).catch((e) => {
-            sendResponse({ success: false, error: e.message });
+            sendResponse({ success: false, error: e.message, code: e && e.code ? e.code : 'UNKNOWN' });
         });
         return true;
     }
@@ -1447,12 +1499,32 @@ function extractAutoLabel(text) {
 
 async function handleStartTracking(tabId) {
     const tab = await chrome.tabs.get(tabId);
+    const tabUrl = tab.url || tab.pendingUrl || '';
+    if (!isSupportedTrackUrl(tabUrl)) {
+        throw createRuntimeError('UNSUPPORTED_URL', 'Only HTTPS tabs can be tracked.');
+    }
+
+    const hasPermission = await hasSitePermission(tabUrl);
+    if (!hasPermission) {
+        throw createRuntimeError('HOST_PERMISSION_DENIED', 'Site access permission is required before tracking.');
+    }
+
+    const started = await startTrackingInTabUntilReady(tabId, tabUrl);
+    if (!started) {
+        throw createRuntimeError('INJECTION_FAILED', 'Could not initialize content script in this tab.');
+    }
 
     // If already tracked as a child (e.g. onCreated auto-detected it),
     // remove the old mapping so we can create a fresh root node
     if (tabToNode.has(tabId)) {
         const existingNodeId = tabToNode.get(tabId);
         const existingNode = await TreeStorage.getNode(existingNodeId);
+        if (!existingNode) {
+            tabToNode.delete(tabId);
+            await createRootNode(tab);
+            return;
+        }
+
         // Only re-create as root if it was auto-created as a child
         if (existingNode && existingNode.parentId) {
             tabToNode.delete(tabId);
@@ -1461,11 +1533,12 @@ async function handleStartTracking(tabId) {
             lastAutoNamedAt.delete(existingNodeId);
             // Clean up the auto-created child node
             await TreeStorage.deleteNode(existingNodeId);
+            await createRootNode(tab);
+            return;
         } else {
-            await startTrackingInTabWithRetry(tabId, tab.url || existingNode?.url || '');
             // Already a root node: refresh naming via stable scheduling.
             try {
-                const response = await getContentWithInjectionFallback(tabId, tab.url || existingNode?.url || '');
+                const response = await getContentWithInjectionFallback(tabId, tabUrl || existingNode?.url || '');
                 const fullText = (response && response.text ? response.text : '').trim();
                 if (fullText.length >= AUTO_NAME_MIN_FULL_TEXT) {
                     queueAutoNaming(existingNodeId, {
@@ -1596,14 +1669,28 @@ async function handleMoveNode(nodeId, newParentId) {
 }
 
 async function handleForceSnapshot(tabId) {
+    const tab = await chrome.tabs.get(tabId);
+    const tabUrl = tab.url || tab.pendingUrl || '';
+    if (!isSupportedTrackUrl(tabUrl)) {
+        throw createRuntimeError('UNSUPPORTED_URL', 'Only HTTPS tabs can capture snapshots.');
+    }
+
+    const ready = await ensureContentScriptReady(tabId, tabUrl);
+    if (!ready) {
+        throw createRuntimeError('INJECTION_FAILED', 'Could not initialize content script for snapshot.');
+    }
+
     try {
         const response = await chrome.tabs.sendMessage(tabId, { type: 'CAPTURE_SNAPSHOT' });
         if (response && response.success && response.data) {
             await handleSnapshotData(tabId, response.data, 'manual');
+            return;
         }
     } catch {
-        console.warn('[AI Tree] Failed to request snapshot from tab', tabId);
+        // fall through to explicit error
     }
+
+    throw createRuntimeError('INJECTION_FAILED', 'Snapshot capture failed in this tab.');
 }
 
 // ── Broadcast to side panel ──

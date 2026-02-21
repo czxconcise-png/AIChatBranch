@@ -81,7 +81,13 @@ const I18N = {
         enterApiKeyFirst: 'Please enter an API key first.',
         runtimeErrorPrefix: 'Error',
         connectionFailed: 'Connection failed:\n{error}',
-        unknownError: 'Unknown error'
+        unknownError: 'Unknown error',
+        noActiveTab: 'No active tab found.',
+        trackUnsupportedHttps: 'Only HTTPS pages can be tracked.',
+        trackInjectionFailed: 'Could not inject page helper script. Refresh the page and try again.',
+        permissionRequestFailed: 'Failed to request site permission.\n{error}',
+        permissionDenied: 'Permission was not granted. This site was not tracked.',
+        permissionNotice: 'AI Chat Branch needs access to this site to track branches.\n\nWhat is accessed:\n- Page/chat content on this site for branch tree, snapshots, and node positioning.\n\nHow data is handled:\n- Branch tree, snapshots, and settings are stored locally in your browser.\n- If Auto Naming is enabled, a recent snippet is sent to your selected naming API.\n\nIf you deny access, this site cannot be tracked.'
     },
     zh: {
         appTitle: 'AI Chat Branch',
@@ -152,7 +158,13 @@ const I18N = {
         enterApiKeyFirst: '\u8bf7\u5148\u8f93\u5165 API Key\u3002',
         runtimeErrorPrefix: '\u9519\u8bef',
         connectionFailed: '\u8fde\u63a5\u5931\u8d25:\n{error}',
-        unknownError: '\u672a\u77e5\u9519\u8bef'
+        unknownError: '\u672a\u77e5\u9519\u8bef',
+        noActiveTab: '\u672a\u627e\u5230\u5f53\u524d\u6fc0\u6d3b\u7684\u6807\u7b7e\u9875\u3002',
+        trackUnsupportedHttps: '\u53ea\u652f\u6301\u8ddf\u8e2a HTTPS \u9875\u9762\u3002',
+        trackInjectionFailed: '\u65e0\u6cd5\u6ce8\u5165\u9875\u9762\u811a\u672c\uff0c\u8bf7\u5237\u65b0\u9875\u9762\u540e\u91cd\u8bd5\u3002',
+        permissionRequestFailed: '\u7533\u8bf7\u7ad9\u70b9\u6743\u9650\u5931\u8d25\uff1a\n{error}',
+        permissionDenied: '\u672a\u6388\u4e88\u7ad9\u70b9\u6743\u9650\uff0c\u8be5\u7ad9\u70b9\u672a\u88ab\u8ddf\u8e2a\u3002',
+        permissionNotice: 'AI Chat Branch \u9700\u8981\u5f53\u524d\u7ad9\u70b9\u7684\u8bbf\u95ee\u6743\u9650\u624d\u80fd\u8ddf\u8e2a\u5206\u652f\u3002\n\n\u4f1a\u8bfb\u53d6\u7684\u5185\u5bb9\uff1a\n- \u5f53\u524d\u7ad9\u70b9\u7684\u9875\u9762/\u5bf9\u8bdd\u5185\u5bb9\uff0c\u7528\u4e8e\u5206\u652f\u6811\u3001\u5feb\u7167\u4e0e\u8282\u70b9\u5b9a\u4f4d\u3002\n\n\u6570\u636e\u5904\u7406\u65b9\u5f0f\uff1a\n- \u5206\u652f\u6811\u3001\u5feb\u7167\u3001\u8bbe\u7f6e\u9ed8\u8ba4\u4fdd\u5b58\u5728\u4f60\u672c\u5730\u6d4f\u89c8\u5668\u4e2d\u3002\n- \u82e5\u542f\u7528\u81ea\u52a8\u547d\u540d\uff0c\u4f1a\u5c06\u6700\u65b0\u7247\u6bb5\u53d1\u9001\u7ed9\u4f60\u9009\u62e9\u7684\u547d\u540d API\u3002\n\n\u5982\u679c\u62d2\u7edd\u6388\u6743\uff0c\u5c06\u65e0\u6cd5\u8ddf\u8e2a\u8be5\u7ad9\u70b9\u3002'
     }
 };
 
@@ -192,6 +204,113 @@ function mapSnapshotReason(reason) {
         auto_name: t('snapshotReasonAutoName')
     };
     return reasonMap[reason] || reason || t('snapshotReasonManual');
+}
+
+function getHttpsOriginPattern(rawUrl) {
+    if (!rawUrl || typeof rawUrl !== 'string') return null;
+    try {
+        const url = new URL(rawUrl);
+        if (url.protocol !== 'https:') return null;
+        return `${url.origin}/*`;
+    } catch {
+        return null;
+    }
+}
+
+function storageGetAsync(keys) {
+    return new Promise((resolve) => {
+        chrome.storage.local.get(keys, (result) => {
+            resolve(result || {});
+        });
+    });
+}
+
+function storageSetAsync(values) {
+    return new Promise((resolve, reject) => {
+        chrome.storage.local.set(values, () => {
+            if (chrome.runtime.lastError) {
+                reject(new Error(chrome.runtime.lastError.message));
+                return;
+            }
+            resolve();
+        });
+    });
+}
+
+function permissionsContainsAsync(origins) {
+    return new Promise((resolve, reject) => {
+        chrome.permissions.contains({ origins: origins }, (granted) => {
+            if (chrome.runtime.lastError) {
+                reject(new Error(chrome.runtime.lastError.message));
+                return;
+            }
+            resolve(!!granted);
+        });
+    });
+}
+
+function permissionsRequestAsync(origins) {
+    return new Promise((resolve, reject) => {
+        chrome.permissions.request({ origins: origins }, (granted) => {
+            if (chrome.runtime.lastError) {
+                reject(new Error(chrome.runtime.lastError.message));
+                return;
+            }
+            resolve(!!granted);
+        });
+    });
+}
+
+function mapTrackErrorMessage(code, fallbackError) {
+    switch (code) {
+        case 'UNSUPPORTED_URL':
+            return t('trackUnsupportedHttps');
+        case 'HOST_PERMISSION_DENIED':
+            return t('permissionDenied');
+        case 'INJECTION_FAILED':
+            return t('trackInjectionFailed');
+        case 'PERMISSION_REQUEST_FAILED':
+            return t('permissionRequestFailed', { error: fallbackError || t('unknownError') });
+        default:
+            return fallbackError || t('unknownError');
+    }
+}
+
+async function ensureTrackPermissionForTab(tab) {
+    const rawUrl = (tab && (tab.url || tab.pendingUrl)) || '';
+    const originPattern = getHttpsOriginPattern(rawUrl);
+    if (!originPattern) {
+        return { ok: false, code: 'UNSUPPORTED_URL' };
+    }
+
+    const alreadyGranted = await permissionsContainsAsync([originPattern]);
+    if (alreadyGranted) {
+        return { ok: true, originPattern: originPattern };
+    }
+
+    const settings = await storageGetAsync(['permissionNoticeAcceptedV1']);
+    if (!settings.permissionNoticeAcceptedV1) {
+        const accepted = confirm(t('permissionNotice'));
+        if (!accepted) {
+            return { ok: false, code: 'HOST_PERMISSION_DENIED' };
+        }
+        await storageSetAsync({ permissionNoticeAcceptedV1: true });
+    }
+
+    try {
+        const granted = await permissionsRequestAsync([originPattern]);
+        if (!granted) {
+            return { ok: false, code: 'HOST_PERMISSION_DENIED' };
+        }
+    } catch (e) {
+        return {
+            ok: false,
+            code: 'PERMISSION_REQUEST_FAILED',
+            error: e && e.message ? e.message : t('unknownError'),
+        };
+    }
+
+    return { ok: true, originPattern: originPattern };
 }
 
 function applyI18n() {
@@ -971,12 +1090,36 @@ function setupEventListeners() {
     // Track button
     btnTrack.addEventListener('click', async () => {
         const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-        if (tab) {
-            chrome.runtime.sendMessage({ type: 'START_TRACKING_TAB', tabId: tab.id }, () => {
-                if (chrome.runtime.lastError) return;
-                loadTree();
-            });
+        if (!tab || !tab.id) {
+            alert(t('noActiveTab'));
+            return;
         }
+
+        let permissionResult;
+        try {
+            permissionResult = await ensureTrackPermissionForTab(tab);
+        } catch (e) {
+            alert(t('permissionRequestFailed', { error: e && e.message ? e.message : t('unknownError') }));
+            return;
+        }
+
+        if (!permissionResult.ok) {
+            alert(mapTrackErrorMessage(permissionResult.code, permissionResult.error));
+            return;
+        }
+
+        chrome.runtime.sendMessage({ type: 'START_TRACKING_TAB', tabId: tab.id }, (response) => {
+            if (chrome.runtime.lastError) {
+                alert(`${t('runtimeErrorPrefix')}: ${chrome.runtime.lastError.message}`);
+                return;
+            }
+            if (!response || !response.success) {
+                const errorMessage = mapTrackErrorMessage(response ? response.code : '', response ? response.error : t('unknownError'));
+                alert(`${t('runtimeErrorPrefix')}: ${errorMessage}`);
+                return;
+            }
+            loadTree();
+        });
     });
 
     // Close snapshot

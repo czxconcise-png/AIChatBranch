@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "AI Chat Branch",
   "version": "1.0.0",
-  "description": "Track and visualize AI chat branching as a tree. Keep snapshots so no conversation context gets lost.",
+  "description": "Branch AI and web conversations into a visual tree, auto-name each path by topic, and keep snapshots for easy backtracking.",
   "permissions": [
     "tabs",
     "sidePanel",
@@ -10,20 +10,12 @@
     "activeTab",
     "scripting"
   ],
+  "optional_host_permissions": [
+    "https://*/*"
+  ],
   "background": {
     "service_worker": "background.js"
   },
-  "content_scripts": [
-    {
-      "matches": [
-        "<all_urls>"
-      ],
-      "js": [
-        "content.js"
-      ],
-      "run_at": "document_idle"
-    }
-  ],
   "side_panel": {
     "default_path": "sidepanel/sidepanel.html"
   },
